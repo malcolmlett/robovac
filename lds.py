@@ -2,26 +2,28 @@
 
 # Assumptions in approach:
 # - Laser traces are have infinitesimal width
-# - All decimal-valued coordinates identify infinitesimal width positions somewhere within the width of the pixel
-#   that it overlays. With #.0 at the near-origin side of the pixel, and #.9999 at the opposite side of the same pixel.
-# - All integer-valued coordinates identify a pixel-width square spanning the range (#.0,#.0) to (#.9999,#.9999) and
-#   with its centre at (#.5,#.5).
+# - All integer-valued coordinates identify a pixel-width square centered on its coordinate (#.0,#.0) and
+#   spanning the range >= (-#.5,-#.5) to < (+#.5,+#.5).
+# - All decimal-valued coordinates are taken to have infinitesimal width.
+# - Note that the above aligns with many plotting libraries, including matplotlib.imshow(), so that you can overlay
+#   decimal-valued coordinates directly over the image without conversions.
 #
 # For collision with individual pixels, the approach is:
-# - Treat each pixel as a circle, having a centre in the middle of the pixel and a diameter equal to the diagonal of
-#   the pixel (ie:  2–√ ).
+# - Treat each pixel as a circle, having a centre at its coordinate and a diameter equal to the diagonal of
+#   the pixel (ie: `sqrt(2)`).
 # - Additionally, each pixel has a holographic line that always passes through the centre and has a normal in the
 #   direction of the trace. The line extends out from the centre in both directions with radius equal to the radius
 #   of the pixel.
-# - A collision in determined by doing the single linear algebra dot-product trick to identify the intersection point
+# - A collision in determined by taking a dot-product to identify the intersection point
 #   between the trace and the pixel's line, and then to check whether the intersection is within the line radius.
 # - When selecting between potential collisions, the min distance to intersection point is taken.
+# - We use metres as the unit for physical space coordinates.
 #
-# Setup:
+# Common parameters:
 # - step_size = position increment used by traces, in their direction
 # - grid_size = distance between centres of nearest-neighbours cache grid
-# - step_size = grid_size
-# - Nearest-neighbours bubble size: radius = grid_size
+# - pixel_size = size of pixels in meters
+# Typically step_size = grid_size, and nearest-neighbours bubble radius = grid_size.
 # This ensures that the bubbles overlap considerably on horizontal/vertical and diagonal axes.
 # It's possible that it'd work with 0.5sqrt(2)step-size - so that the bubbles meet exactly on the diagonal and
 # overlap a little on the horizontal/vertical. However there's potentially an edge case with traces jumping
@@ -34,6 +36,7 @@ import numpy as np
 def lds_to_2d(ranges, centre, start_angle):
     """
     Converts LDS range data to Euclidean coordinates.
+    Applies a unit-less conversion, retaining the same unit in the 2D coords as used by the range values.
     :param ranges: array (n,) - range values may contain nans, which are ignored
     :param centre: array (2,) = [x,y] - centre point for ranges
     :param start_angle: angle of first range (radians)
@@ -60,39 +63,57 @@ def lds_to_2d(ranges, centre, start_angle):
 # 4. For each trace that hasn't already been consumed and for which the cache has pixels:
 #    1. Take all the pixels in the cache bubble and find the collision, if any, with the min distance
 #    2. For all traces that have had collisions, mark them as consumed.
-def lds_sample(data, centre, angle=0.0, **kwargs):
+def lds_sample(image, centre, angle=0.0, **kwargs):
     """
     Generates LDS data sampled from a given centre position within an architectural image.
     LDS data represents a sampling across a 360 degree clockwise spread, starting on the requested angle.
 
+    Coordinates are specified in an "output unit", with a conversion from pixels to the output
+    unit defined by `pixel_size` (default: 1.0).
+
     Parameters:
-    - data: array (r,c) of bool or float
-        Architectural image
+    - image: array (r,c) of bool or float
+        Semantic map encoded as a 2D array of values.
     - centre: [x,y] of float
-        Point from which LDS sample is taken
-    - angle: radians
-        Starting angle of LDS sample
+        Point from which LDS sample is taken (unit: output units)
+    - angle: float
+        Starting angle of LDS sample (unit: radians)
 
     Keyword args:
     - resolution: float, default: 1 degree (360 traces)
         Angle between each trace (radians)
     - step_size: float, default: 5
-        Position increment used by traces, in their direction
+        Position increment used by traces, in their direction (unit: output units)
     - max_distance: float, default: 100
+        Maximum distance that an LDS can observe (unit: output units)
+    - nothing_value: float, default: 0.0.
+        The data value that indicates nothing is present at the pixel.
+        All other values are treated as pixels.
+    - pixel_size: float, default: 1.0.
+        The size of the pixel in the desired output unit.
+        Defaults to 1.0, meaning that we output in pixel units.
+        Alternatively, for example, provide the width of a pixel in meters
+        in order to work with meter coordinates.
 
     Returns:
     - ranges: array (n,) of float
         LDS data for each sample angle, or NaN for no hit
+        (unit: output units).
     """
 
-    # load options
+    # config
     resolution = kwargs.get('resolution', np.deg2rad(1.0))
     step_size = kwargs.get('step_size', 5)
     max_distance = kwargs.get('max_distance', 100)
+    nothing_value = kwargs.get('nothing_value', 0.0)
+    pixel_size = kwargs.get('pixel_size', 1.0)
 
-    # initialise cache
-    grid_size = step_size
-    grid = construct_nn_grid(data, grid_size, grid_radius=step_size)
+    # initialise lookup cache
+    grid_size_px = math.floor(step_size / pixel_size)  # conservatively prefer regions slightly closer together
+    grid_radius_px = math.ceil(step_size / pixel_size)  # conservatively prefer regions slightly larger
+    grid_size = grid_size_px * pixel_size  # in output unit, used for lookups later on
+    grid = construct_nn_grid(image, grid_size_px, grid_radius=grid_radius_px, nothing_value=nothing_value,
+                             pixel_size=pixel_size)
     grid_counts = np.array([[grid[r, c]['count'] for c in range(grid.shape[1])] for r in range(grid.shape[0])])
 
     # initialise traces
@@ -100,33 +121,33 @@ def lds_sample(data, centre, angle=0.0, **kwargs):
     angles = np.linspace(0, np.pi * 2, num=num_traces, endpoint=False) + angle
     ranges = np.full((num_traces,), np.nan)
     steps = np.column_stack((np.cos(angles), np.sin(angles))) * step_size
-    max_x = data.shape[1] - 1
-    max_y = data.shape[0] - 1
+    max_x = image.shape[1] - 1
+    max_y = image.shape[0] - 1
 
     for step_i in range(math.ceil(max_distance / step_size)):
         # move all trace points
         points = steps * step_i + centre
 
-        # identify applicable grid blocks and which to traces to execute against
+        # identify applicable grid blocks and which traces to execute against
         #  - filter: only process for traces that haven't already been consumed
         #  - filter: don't go outside bounds of data
         #  - filter: ignore grid blocks with no pixels
         grid_xs = np.round(points[:, 0] / grid_size).astype(int)
         grid_ys = np.round(points[:, 1] / grid_size).astype(int)
-        filter = np.isnan(ranges)
-        filter &= (points[:, 0] >= 0) & (points[:, 0] <= max_x)
-        filter &= (points[:, 1] >= 0) & (points[:, 1] <= max_y)
-        if np.sum(filter) == 0:
+        mask = np.isnan(ranges)
+        mask &= (points[:, 0] >= 0) & (points[:, 0] <= max_x)
+        mask &= (points[:, 1] >= 0) & (points[:, 1] <= max_y)
+        if np.sum(mask) == 0:
             continue  # skip if there's nothing to do
-        has_counts = grid_counts[(grid_ys[filter], grid_xs[filter])] > 0
-        filter[filter] = has_counts
-        if np.sum(filter) == 0:
+        has_counts = grid_counts[(grid_ys[mask], grid_xs[mask])] > 0
+        mask[mask] = has_counts
+        if np.sum(mask) == 0:
             continue  # skip if there's nothing to do
 
         # process each accepted block
-        for idx in np.where(filter)[0]:
+        for idx in np.where(mask)[0]:
             intersection, distance, pixel_coord, pixel_value = find_collision(
-                centre, steps[idx], grid[grid_ys[idx], grid_xs[idx]])
+                centre, steps[idx], grid[grid_ys[idx], grid_xs[idx]], pixel_size=pixel_size)
             if not np.isnan(distance):
                 ranges[idx] = distance
 
@@ -136,38 +157,49 @@ def lds_sample(data, centre, angle=0.0, **kwargs):
     return ranges
 
 
-def construct_nn_grid(data, grid_size, grid_radius=None, **kwargs):
+def construct_nn_grid(image, grid_size, grid_radius=None, **kwargs):
     """
     Constructs a lookup array populated with lists of nearest-neighbour pixels
     located within circular regions around a grid of centres.
 
+    By default, returns coordinates in pixel units.
+    Supply a pixel_size parameter to convert to any other unit.
+
     Parameters:
-    - data: array(r,c) of bool or float
+    - image: array(r,c) of bool or float
         An image that represents a 2D world of pixel-sized objects having a single floating value each.
     - grid_size: float
-        The spacing between each centre.
+        The spacing between each centre (unit: pixels)
     - grid_radius: float, optional (default: same as grid_size)
-        The radius of each circular region.
+        The radius of each circular region (unit: pixels)
 
     Keyword args:
-    - nothing_value: float, optional (default: 0.0).
+    - nothing_value: float, default: 0.0.
         The data value that indicates nothing is present at the pixel.
         All other values are treated as pixels.
+    - pixel_size: float, default: 1.0.
+        The size of the pixel in the desired output unit.
+        Defaults to 1.0 meaning that we output in pixel units.
+        Alternatively, for example, provide the width of a pixel in meters
+        in order to work with meter coordinates subsequently.
 
     Returns:
     - 2-array of dicts {count: int, pixel_coords: array(N,2), pixel_values: array(N,)}
         Constructed grid of nearest-neighbour results.
         Each array position lists the number of non-empty pixels, their coordinates
-        as [[x,y]], and their values.
+        as [[x,y]] (in pixel_size units), and their values.
     """
 
-    # setup
+    # config
     grid_radius = grid_radius or grid_size
     nothing_value = kwargs.get('nothing_value', 0.0)
-    max_x = data.shape[1] - 1
-    max_y = data.shape[0] - 1
-    rows = math.ceil(data.shape[0] / grid_radius) + 1  # so that ceil(len/radius) is last index
-    cols = math.ceil(data.shape[1] / grid_radius) + 1  # so that ceil(len/radius) is last index
+    pixel_size = kwargs.get('pixel_size', 1.0)
+
+    # setup
+    max_x = image.shape[1] - 1
+    max_y = image.shape[0] - 1
+    rows = math.ceil(image.shape[0] / grid_radius) + 1  # so that ceil(len/radius) is last index
+    cols = math.ceil(image.shape[1] / grid_radius) + 1  # so that ceil(len/radius) is last index
     grid = np.empty((rows, cols), dtype=object)
 
     for yi in range(rows):
@@ -175,30 +207,30 @@ def construct_nn_grid(data, grid_size, grid_radius=None, **kwargs):
             # identify grid location
             centre_x = xi * grid_size
             centre_y = yi * grid_size
-            left = max(0, centre_x - grid_radius)  # inclusive
-            right = min(max_x, centre_x + grid_radius)  # inclusive
-            top = max(0, centre_y - grid_radius)  # inclusive
+            left = max(0, centre_x - grid_radius)        # inclusive
+            right = min(max_x, centre_x + grid_radius)   # inclusive
+            top = max(0, centre_y - grid_radius)         # inclusive
             bottom = min(max_y, centre_y + grid_radius)  # inclusive
 
             # fetch square-shaped block
-            # (pixel coordinates are computed at their centres)
-            pixel_values = data[top:bottom + 1, left:right + 1].ravel()
-            xs, ys = np.meshgrid(np.arange(left + 0.5, right + 1.5), np.arange(top + 0.5, bottom + 1.5), indexing='xy')
+            # (pixel coordinates represent their centres)
+            xs, ys = np.meshgrid(np.arange(left, right+1), np.arange(top, bottom+1), indexing='xy')
             pixel_coords = np.column_stack((xs.ravel(), ys.ravel()))
+            pixel_values = image[top:bottom + 1, left:right + 1].ravel()
 
             # filter block: remove all empty pixels
-            filter = pixel_values != nothing_value
-            pixel_values = pixel_values[filter]
-            pixel_coords = pixel_coords[filter]
+            mask = pixel_values != nothing_value
+            pixel_coords = pixel_coords[mask]
+            pixel_values = pixel_values[mask]
 
             # filter block: remove everything outside of grid_radius
-            filter = np.sum((pixel_coords - [centre_x, centre_y]) ** 2, axis=1) <= grid_radius ** 2
-            pixel_values = pixel_values[filter]
-            pixel_coords = pixel_coords[filter]
+            mask = np.sum((pixel_coords - [centre_x, centre_y]) ** 2, axis=1) <= grid_radius ** 2
+            pixel_coords = pixel_coords[mask]
+            pixel_values = pixel_values[mask]
 
             grid[yi, xi] = {
                 'count': pixel_values.shape[0],
-                'pixel_coords': pixel_coords,
+                'pixel_coords': pixel_coords * pixel_size,
                 'pixel_values': pixel_values
             }
     return grid
@@ -210,25 +242,40 @@ def construct_nn_grid(data, grid_size, grid_radius=None, **kwargs):
 # Filter to remove all intersections that are > pixel radius from the pixel centre.
 # Compute the distances to each remaining intersection point.
 # Take the min distance, if any remain.
-def find_collision(start, direction, pixels):
+def find_collision(start, direction, pixels, **kwargs):
     """
     Finds the closest collision, if any, between a trace and a collection of pixels.
+    Applies unit-less computations, retaining the same unit in output as used by the inputs,
+    which must all use the same units.
 
     Arguments:
     - start: array(1,2) = [x,y]
-        Starting point of trace
+        Starting point of trace (unit: output units)
     - direction: array(1,2) = (dx,dy)
         Direction of trace (any scale)
-    - pixels: dict{pixel_coords, pixel_values} an entry as produced by construct_nn_grid()
+    - pixels: dict{pixel_coords, pixel_values}
+        An entry as produced by construct_nn_grid() (unit: output units)
+
+    Keyword args:
+    - pixel_size: float, default: 1.0.
+        The size of the pixel in the desired output unit.
+        Defaults to 1.0 meaning that we output in pixel units.
+        Alternatively, for example, provide the width of a pixel in meters
+        in order to work with meter coordinates subsequently.
 
     Returns tuple containing:
     - intersection: array(1,2)=[x,y]
-        Coord of intersection, or nan otherwise
+        Coord of intersection, or nan otherwise (unit: output units)
     - distance: float
-        Trace distance from start to intersection point, or nan otherwise
+        Trace distance from start to intersection point, or nan otherwise (unit: output units)
     - pixel_coord: array(1,2)=[x,y]
+        (unit: output units)
     - pixel_value: bool or float
     """
+    # config
+    pixel_size = kwargs.get('pixel_size', 1.0)
+
+    # setup
     intersection = np.nan
     distance = np.nan
     pixel_coord = np.nan
@@ -239,20 +286,20 @@ def find_collision(start, direction, pixels):
     #                    scaled to the length of a pixel_radius so we can easily use it to determine length
     pixel_coords = pixels['pixel_coords']
     pixel_values = pixels['pixel_values']
-    pixel_radius = math.sqrt(0.5)  # diagonal distance from centre of pixel to corner
+    pixel_radius = math.sqrt(pixel_size / 2)  # diagonal distance from centre of pixel to corner
     pixel_direction = [direction[1], -direction[0]]
     pixel_direction = pixel_direction / np.linalg.norm(
         pixel_direction) * pixel_radius  # rescale to be multiplies of pixel_radius
     pixel_t = np.dot(start - pixel_coords, pixel_direction) / np.dot(pixel_direction, pixel_direction)
 
     # filter: intersection point must be within pixel_radius from pixel_centre (|t| <= 1.0)
-    filter = abs(pixel_t) <= 1.0
-    if np.sum(filter) > 0:
+    mask = abs(pixel_t) <= 1.0
+    if np.sum(mask) > 0:
         # compute intersections
-        intersections = pixel_coords[filter] + pixel_t[filter].reshape(-1, 1) * pixel_direction
+        intersections = pixel_coords[mask] + pixel_t[mask].reshape(-1, 1) * pixel_direction
 
         # filter: intersection must be in positive side of trace direction
-        trace_t = np.dot(pixel_coords[filter] - start, direction) / np.dot(direction, direction)
+        trace_t = np.dot(pixel_coords[mask] - start, direction) / np.dot(direction, direction)
         intersections = intersections[trace_t >= 0.0]
 
         # select intersection with min distance
@@ -261,7 +308,7 @@ def find_collision(start, direction, pixels):
             idx = np.argmin(distances)
             intersection = intersections[idx]
             distance = distances[idx]
-            pixel_coord = pixel_coords[filter][idx]
-            pixel_value = pixel_values[filter][idx]
+            pixel_coord = pixel_coords[mask][idx]
+            pixel_value = pixel_values[mask][idx]
 
     return intersection, distance, pixel_coord, pixel_value
