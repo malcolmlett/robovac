@@ -26,7 +26,7 @@
 # Typically step_size = grid_size, and nearest-neighbours bubble radius = grid_size.
 # This ensures that the bubbles overlap considerably on horizontal/vertical and diagonal axes.
 # It's possible that it'd work with 0.5sqrt(2)step-size - so that the bubbles meet exactly on the diagonal and
-# overlap a little on the horizontal/vertical. However there's potentially an edge case with traces jumping
+# overlap a little on the horizontal/vertical. However, there's potentially an edge case with traces jumping
 # semi-diagonally over a bubble and missing potential collisions. The larger bubble size resolves this, I believe.
 
 import math
@@ -63,17 +63,17 @@ def lds_to_2d(ranges, centre, start_angle):
 # 4. For each trace that hasn't already been consumed and for which the cache has pixels:
 #    1. Take all the pixels in the cache bubble and find the collision, if any, with the min distance
 #    2. For all traces that have had collisions, mark them as consumed.
-def lds_sample(image, centre, angle=0.0, **kwargs):
+def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
     """
-    Generates LDS data sampled from a given centre position within an architectural image.
+    Generates LDS data sampled from a floor plan from a given centre position and reference angle.
     LDS data represents a sampling across a 360 degree clockwise spread, starting on the requested angle.
 
     Coordinates are specified in an "output unit", with a conversion from pixels to the output
     unit defined by `pixel_size` (default: 1.0).
 
     Parameters:
-    - image: array (r,c) of bool or float
-        Semantic map encoded as a 2D array of values.
+    - semantic_map: array (r,c) of bool or float
+        Encoded as a 2D array of values.
     - centre: [x,y] of float
         Point from which LDS sample is taken (unit: output units)
     - angle: float
@@ -112,7 +112,7 @@ def lds_sample(image, centre, angle=0.0, **kwargs):
     grid_size_px = math.floor(step_size / pixel_size)  # conservatively prefer regions slightly closer together
     grid_radius_px = math.ceil(step_size / pixel_size)  # conservatively prefer regions slightly larger
     grid_size = grid_size_px * pixel_size  # in output unit, used for lookups later on
-    grid = construct_nn_grid(image, grid_size_px, grid_radius=grid_radius_px, nothing_value=nothing_value,
+    grid = construct_nn_grid(semantic_map, grid_size_px, grid_radius=grid_radius_px, nothing_value=nothing_value,
                              pixel_size=pixel_size)
     grid_counts = np.array([[grid[r, c]['count'] for c in range(grid.shape[1])] for r in range(grid.shape[0])])
 
@@ -121,8 +121,8 @@ def lds_sample(image, centre, angle=0.0, **kwargs):
     angles = np.linspace(0, np.pi * 2, num=num_traces, endpoint=False) + angle
     ranges = np.full((num_traces,), np.nan)
     steps = np.column_stack((np.cos(angles), np.sin(angles))) * step_size
-    max_x = image.shape[1] - 1
-    max_y = image.shape[0] - 1
+    max_x = semantic_map.shape[1] - 1
+    max_y = semantic_map.shape[0] - 1
 
     for step_i in range(math.ceil(max_distance / step_size)):
         # move all trace points
@@ -157,7 +157,7 @@ def lds_sample(image, centre, angle=0.0, **kwargs):
     return ranges
 
 
-def construct_nn_grid(image, grid_size, grid_radius=None, **kwargs):
+def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
     """
     Constructs a lookup array populated with lists of nearest-neighbour pixels
     located within circular regions around a grid of centres.
@@ -166,8 +166,9 @@ def construct_nn_grid(image, grid_size, grid_radius=None, **kwargs):
     Supply a pixel_size parameter to convert to any other unit.
 
     Parameters:
-    - image: array(r,c) of bool or float
-        An image that represents a 2D world of pixel-sized objects having a single floating value each.
+    - semantic_map: array(r,c) of bool or float
+        An image that represents a 2D world of pixel-sized objects having a single value each to classify different
+        kinds of objects.
     - grid_size: float
         The spacing between each centre (unit: pixels)
     - grid_radius: float, optional (default: same as grid_size)
@@ -196,10 +197,10 @@ def construct_nn_grid(image, grid_size, grid_radius=None, **kwargs):
     pixel_size = kwargs.get('pixel_size', 1.0)
 
     # setup
-    max_x = image.shape[1] - 1
-    max_y = image.shape[0] - 1
-    rows = math.ceil(image.shape[0] / grid_radius) + 1  # so that ceil(len/radius) is last index
-    cols = math.ceil(image.shape[1] / grid_radius) + 1  # so that ceil(len/radius) is last index
+    max_x = semantic_map.shape[1] - 1
+    max_y = semantic_map.shape[0] - 1
+    rows = math.ceil(semantic_map.shape[0] / grid_radius) + 1  # so that ceil(len/radius) is last index
+    cols = math.ceil(semantic_map.shape[1] / grid_radius) + 1  # so that ceil(len/radius) is last index
     grid = np.empty((rows, cols), dtype=object)
 
     for yi in range(rows):
@@ -216,7 +217,7 @@ def construct_nn_grid(image, grid_size, grid_radius=None, **kwargs):
             # (pixel coordinates represent their centres)
             xs, ys = np.meshgrid(np.arange(left, right+1), np.arange(top, bottom+1), indexing='xy')
             pixel_coords = np.column_stack((xs.ravel(), ys.ravel()))
-            pixel_values = image[top:bottom + 1, left:right + 1].ravel()
+            pixel_values = semantic_map[top:bottom + 1, left:right + 1].ravel()
 
             # filter block: remove all empty pixels
             mask = pixel_values != nothing_value
