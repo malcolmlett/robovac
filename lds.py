@@ -71,6 +71,9 @@ def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
     Coordinates are specified in an "output unit", with a conversion from pixels to the output
     unit defined by `pixel_size` (default: 1.0).
 
+    Experiments have found that a step_size that leads to about 3 steps total is optimum, and by default
+    this function uses that rule.
+
     Parameters:
     - semantic_map: array (r,c) of bool or float
         Encoded as a 2D array of values.
@@ -82,7 +85,7 @@ def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
     Keyword args:
     - resolution: float, default: 1 degree (360 traces)
         Angle between each trace (radians)
-    - step_size: float, default: 5
+    - step_size: float, default: calculated s.t. there are 3 steps
         Position increment used by traces, in their direction (unit: output units)
     - max_distance: float, default: 100
         Maximum distance that an LDS can observe (unit: output units)
@@ -103,8 +106,8 @@ def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
 
     # config
     resolution = kwargs.get('resolution', np.deg2rad(1.0))
-    step_size = kwargs.get('step_size', 5)
     max_distance = kwargs.get('max_distance', 100)
+    step_size = kwargs.get('step_size', max_distance/3)
     nothing_value = kwargs.get('nothing_value', 0.0)
     pixel_size = kwargs.get('pixel_size', 1.0)
 
