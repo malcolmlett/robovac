@@ -29,6 +29,13 @@
 # overlap a little on the horizontal/vertical. However, there's potentially an edge case with traces jumping
 # semi-diagonally over a bubble and missing potential collisions. The larger bubble size resolves this, I believe.
 
+# Coordinates:
+# - The usual convention for scientific application is to have the origin at bottom-left, but that's difficult
+#   when many of the data structures are arrays and images, which have their origin at top-left.
+#   For that reason, I choose the convention that the origin is top-left.
+# - The usual convention is that angles start from the positive x-axis, and move counterclockwise.
+#   I'll stick with that.
+
 import math
 import numpy as np
 
@@ -43,7 +50,7 @@ def lds_to_2d(ranges, centre, start_angle):
     :return: array (n,2) of [x,y] coords (without nans)
     """
     angles = np.linspace(0, np.pi * 2, num=ranges.shape[0], endpoint=False) + start_angle
-    steps = np.column_stack((np.cos(angles), np.sin(angles)))
+    steps = np.column_stack((np.cos(angles), -np.sin(angles)))
     points = steps * ranges.reshape(-1, 1) + centre
     return points[~np.isnan(ranges)]
 
@@ -63,10 +70,10 @@ def lds_to_2d(ranges, centre, start_angle):
 # 4. For each trace that hasn't already been consumed and for which the cache has pixels:
 #    1. Take all the pixels in the cache bubble and find the collision, if any, with the min distance
 #    2. For all traces that have had collisions, mark them as consumed.
-def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
+def lds_sample(semantic_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     """
     Generates LDS data sampled from a floor plan from a given centre position and reference angle.
-    LDS data represents a sampling across a 360 degree clockwise spread, starting on the requested angle.
+    LDS data represents a sampling across a 360 degree counterclockwise spread, starting on the requested angle.
 
     Coordinates are specified in an "output unit", with a conversion from pixels to the output
     unit defined by `pixel_size` (default: 1.0).
@@ -77,9 +84,9 @@ def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
     Parameters:
     - semantic_map: array (r,c) of bool or float
         Encoded as a 2D array of values.
-    - centre: [x,y] of float
+    - centre: [x,y] of float, default: origin
         Point from which LDS sample is taken (unit: output units)
-    - angle: float
+    - angle: float, default: 0.0
         Starting angle of LDS sample (unit: radians)
 
     Keyword args:
@@ -119,15 +126,15 @@ def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
                              pixel_size=pixel_size)
     grid_counts = np.array([[grid[r, c]['count'] for c in range(grid.shape[1])] for r in range(grid.shape[0])])
 
-    # initialise traces
+    # initialise traces (uses output units)
     num_traces = int(np.round(2 * np.pi / resolution))
     angles = np.linspace(0, np.pi * 2, num=num_traces, endpoint=False) + angle
     ranges = np.full((num_traces,), np.nan)
-    steps = np.column_stack((np.cos(angles), np.sin(angles))) * step_size
+    steps = np.column_stack((np.cos(angles), -np.sin(angles))) * step_size
 
     for step_i in range(math.ceil(max_distance / step_size)):
-        # move all trace points
-        points = steps * step_i + centre  # in output_units
+        # move all trace points (output units)
+        points = steps * step_i + centre
 
         # identify applicable grid blocks and which traces to execute against
         #  - filter: only process for traces that haven't already been consumed
