@@ -37,15 +37,15 @@ def lds_to_2d(ranges, centre, start_angle):
     """
     Converts LDS range data to Euclidean coordinates.
     Applies a unit-less conversion, retaining the same unit in the 2D coords as used by the range values.
-    :param ranges: array (n,) - range values may contain nans, which are ignored
+    :param ranges: array (n,) - range values may contain nans, which are dropped
     :param centre: array (2,) = [x,y] - centre point for ranges
     :param start_angle: angle of first range (radians)
-    :return: array (n,2) of [x,y] coords
+    :return: array (n,2) of [x,y] coords (without nans)
     """
     angles = np.linspace(0, np.pi * 2, num=ranges.shape[0], endpoint=False) + start_angle
     steps = np.column_stack((np.cos(angles), np.sin(angles)))
     points = steps * ranges.reshape(-1, 1) + centre
-    return points
+    return points[~np.isnan(ranges)]
 
 
 # Algorithm:
@@ -121,25 +121,23 @@ def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
     angles = np.linspace(0, np.pi * 2, num=num_traces, endpoint=False) + angle
     ranges = np.full((num_traces,), np.nan)
     steps = np.column_stack((np.cos(angles), np.sin(angles))) * step_size
-    max_x = semantic_map.shape[1] - 1
-    max_y = semantic_map.shape[0] - 1
 
     for step_i in range(math.ceil(max_distance / step_size)):
         # move all trace points
-        points = steps * step_i + centre
+        points = steps * step_i + centre  # in output_units
 
         # identify applicable grid blocks and which traces to execute against
         #  - filter: only process for traces that haven't already been consumed
         #  - filter: don't go outside bounds of data
         #  - filter: ignore grid blocks with no pixels
-        grid_xs = np.round(points[:, 0] / grid_size).astype(int)
-        grid_ys = np.round(points[:, 1] / grid_size).astype(int)
+        grid_cols = np.round(points[:, 0] / grid_size).astype(int)
+        grid_rows = np.round(points[:, 1] / grid_size).astype(int)
         mask = np.isnan(ranges)
-        mask &= (points[:, 0] >= 0) & (points[:, 0] <= max_x)
-        mask &= (points[:, 1] >= 0) & (points[:, 1] <= max_y)
+        mask &= (grid_cols >= 0) & (grid_cols < grid.shape[1])
+        mask &= (grid_rows >= 0) & (grid_rows < grid.shape[0])
         if np.sum(mask) == 0:
             continue  # skip if there's nothing to do
-        has_counts = grid_counts[(grid_ys[mask], grid_xs[mask])] > 0
+        has_counts = grid_counts[(grid_rows[mask], grid_cols[mask])] > 0
         mask[mask] = has_counts
         if np.sum(mask) == 0:
             continue  # skip if there's nothing to do
@@ -147,7 +145,7 @@ def lds_sample(semantic_map, centre, angle=0.0, **kwargs):
         # process each accepted block
         for idx in np.where(mask)[0]:
             intersection, distance, pixel_coord, pixel_value = find_collision(
-                centre, steps[idx], grid[grid_ys[idx], grid_xs[idx]], pixel_size=pixel_size)
+                centre, steps[idx], grid[grid_rows[idx], grid_cols[idx]], pixel_size=pixel_size)
             if not np.isnan(distance):
                 ranges[idx] = distance
 
@@ -185,7 +183,7 @@ def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
         in order to work with meter coordinates subsequently.
 
     Returns:
-    - 2-array of dicts {count: int, pixel_coords: array(N,2), pixel_values: array(N,)}
+    - 2-array(r,c) of dicts {count: int, pixel_coords: array(N,2), pixel_values: array(N,)}
         Constructed grid of nearest-neighbour results.
         Each array position lists the number of non-empty pixels, their coordinates
         as [[x,y]] (in pixel_size units), and their values.
@@ -199,8 +197,8 @@ def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
     # setup
     max_x = semantic_map.shape[1] - 1
     max_y = semantic_map.shape[0] - 1
-    rows = math.ceil(semantic_map.shape[0] / grid_radius) + 1  # so that ceil(len/radius) is last index
-    cols = math.ceil(semantic_map.shape[1] / grid_radius) + 1  # so that ceil(len/radius) is last index
+    rows = math.ceil(semantic_map.shape[0] / grid_size) + 1  # so that ceil(len/size) is last index
+    cols = math.ceil(semantic_map.shape[1] / grid_size) + 1  # so that ceil(len/size) is last index
     grid = np.empty((rows, cols), dtype=object)
 
     for yi in range(rows):
@@ -287,7 +285,7 @@ def find_collision(start, direction, pixels, **kwargs):
     #                    scaled to the length of a pixel_radius so we can easily use it to determine length
     pixel_coords = pixels['pixel_coords']
     pixel_values = pixels['pixel_values']
-    pixel_radius = math.sqrt(pixel_size / 2)  # diagonal distance from centre of pixel to corner
+    pixel_radius = math.sqrt(0.5) * pixel_size  # diagonal distance from centre of pixel to corner
     pixel_direction = [direction[1], -direction[0]]
     pixel_direction = pixel_direction / np.linalg.norm(
         pixel_direction) * pixel_radius  # rescale to be multiplies of pixel_radius
