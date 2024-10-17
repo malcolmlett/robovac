@@ -1,8 +1,9 @@
 # Creates training data for LDS floorplan to ground-truth floorplan prediction.
 
 import numpy as np
+from tqdm import tqdm
 import cv2
-from . import lds
+import lds
 
 
 def generate_training_data(semantic_map, num_samples, **kwargs):
@@ -31,15 +32,17 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
 
     train_x = []
     train_y = []
-    while len(train_x) < num_samples:
-        loc = np.random.uniform((0,0), semantic_map.shape) * pixel_size
-        angle = np.random.uniform(-np.pi, np.pi)
+    for _ in tqdm(range(num_samples)):
+        # keep trying until we generate one sample
+        while True:
+            loc = np.random.uniform((0,0), semantic_map.shape) * pixel_size
+            angle = np.random.uniform(-np.pi, np.pi)
 
-        print(f"x,y = {loc}, angle={angle}")
-        (lds_map, truth_map) = generate_training_data_sample(semantic_map, loc, angle, **kwargs)
-        if lds_map is not None:
-            train_x.append(lds_map)
-            train_y.append(truth_map)
+            (lds_map, truth_map) = generate_training_data_sample(semantic_map, loc, angle, **kwargs)
+            if lds_map is not None:
+                train_x.append(lds_map)
+                train_y.append(truth_map)
+                break
 
     return train_x, train_y
 
