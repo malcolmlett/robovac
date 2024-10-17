@@ -2,7 +2,7 @@
 
 import numpy as np
 import cv2
-import lds
+from . import lds
 
 
 def generate_training_data(semantic_map, num_samples, **kwargs):
