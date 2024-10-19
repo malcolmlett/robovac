@@ -81,32 +81,32 @@ def lds_sample(semantic_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     Experiments have found that a step_size that leads to about 3 steps total is optimum, and by default
     this function uses that rule.
 
-    Parameters:
-    - semantic_map: array (r,c) of bool or float
+    Args:
+      semantic_map: array (r,c) of bool or float
         Encoded as a 2D array of values.
-    - centre: [x,y] of float, default: origin
+      centre: [x,y] of float, default: origin
         Point from which LDS sample is taken (unit: output units)
-    - angle: float, default: 0.0
+      angle: float, default: 0.0
         Starting angle of LDS sample (unit: radians)
 
     Keyword args:
-    - resolution: float, default: 1 degree (360 traces)
+      resolution: float, default: 1 degree (360 traces)
         Angle between each trace (radians)
-    - step_size: float, default: calculated s.t. there are 3 steps
+      step_size: float, default: calculated s.t. there are 3 steps
         Position increment used by traces, in their direction (unit: output units)
-    - max_distance: float, default: 100
+      max_distance: float, default: 100
         Maximum distance that an LDS can observe (unit: output units)
-    - nothing_value: float, default: 0.0.
+      nothing_value: float, default: 0.0.
         The data value that indicates nothing is present at the pixel.
         All other values are treated as pixels.
-    - pixel_size: float, default: 1.0.
+      pixel_size: float, default: 1.0.
         The size of the pixel in the desired output unit.
         Defaults to 1.0, meaning that we output in pixel units.
         Alternatively, for example, provide the width of a pixel in meters
         in order to work with meter coordinates.
 
     Returns:
-    - ranges: array (n,) of float
+      ranges: array (n,) of float
         LDS data for each sample angle, or NaN for no hit
         (unit: output units).
     """
@@ -174,26 +174,26 @@ def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
     Supply a pixel_size parameter to convert to any other unit.
 
     Parameters:
-    - semantic_map: array(r,c) of bool or float
+      semantic_map: array(r,c) of bool or float
         An image that represents a 2D world of pixel-sized objects having a single value each to classify different
         kinds of objects.
-    - grid_size: float
+      grid_size: float
         The spacing between each centre (unit: pixels)
-    - grid_radius: float, optional (default: same as grid_size)
+      grid_radius: float, optional (default: same as grid_size)
         The radius of each circular region (unit: pixels)
 
     Keyword args:
-    - nothing_value: float, default: 0.0.
+      nothing_value: float, default: 0.0.
         The data value that indicates nothing is present at the pixel.
         All other values are treated as pixels.
-    - pixel_size: float, default: 1.0.
+      pixel_size: float, default: 1.0.
         The size of the pixel in the desired output unit.
         Defaults to 1.0 meaning that we output in pixel units.
         Alternatively, for example, provide the width of a pixel in meters
         in order to work with meter coordinates subsequently.
 
     Returns:
-    - 2-array(r,c) of dicts {count: int, pixel_coords: array(N,2), pixel_values: array(N,)}
+      2-array(r,c) of dicts {count: int, pixel_coords: array(N,2), pixel_values: array(N,)}
         Constructed grid of nearest-neighbour results.
         Each array position lists the number of non-empty pixels, their coordinates
         as [[x,y]] (in pixel_size units), and their values.
@@ -257,29 +257,29 @@ def find_collision(start, direction, pixels, **kwargs):
     Applies unit-less computations, retaining the same unit in output as used by the inputs,
     which must all use the same units.
 
-    Arguments:
-    - start: array(1,2) = [x,y]
+    Args:
+      start: array(1,2) = [x,y]
         Starting point of trace (unit: output units)
-    - direction: array(1,2) = (dx,dy)
+      direction: array(1,2) = (dx,dy)
         Direction of trace (any scale)
-    - pixels: dict{pixel_coords, pixel_values}
+      pixels: dict{pixel_coords, pixel_values}
         An entry as produced by construct_nn_grid() (unit: output units)
 
     Keyword args:
-    - pixel_size: float, default: 1.0.
+      pixel_size: float, default: 1.0.
         The size of the pixel in the desired output unit.
         Defaults to 1.0 meaning that we output in pixel units.
         Alternatively, for example, provide the width of a pixel in meters
         in order to work with meter coordinates subsequently.
 
-    Returns tuple containing:
-    - intersection: array(1,2)=[x,y]
+    Returns:
+      intersection: array(1,2)=[x,y]
         Coord of intersection, or nan otherwise (unit: output units)
-    - distance: float
+      distance: float
         Trace distance from start to intersection point, or nan otherwise (unit: output units)
-    - pixel_coord: array(1,2)=[x,y]
+      pixel_coord: array(1,2)=[x,y]
         (unit: output units)
-    - pixel_value: bool or float
+      pixel_value: bool or float
     """
     # config
     pixel_size = kwargs.get('pixel_size', 1.0)

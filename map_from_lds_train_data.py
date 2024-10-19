@@ -11,22 +11,22 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
     Generates training data sampled from the semantic map.
 
     Keyword args:
-    - max_distance: float, default: 100
+      max_distance: float, default: 100
         Maximum distance that an LDS can observe (unit: physical units)
-    - pixel_size: float, default: 1.0.
+      pixel_size: float, default: 1.0.
         The size of the pixel in the desired physical unit.
         Defaults to 1.0, meaning that we output in pixel units.
-    - nothing_value: bool or float, default: min value from semantic_map
+      nothing_value: bool or float, default: min value from semantic_map
         The data value that indicates nothing is present at the pixel.
         All other values are treated as pixels.
-    - occupied_value: bool or float, default: max value from semantic_map
+      occupied_value: bool or float, default: max value from semantic_map
         The data value used by LDS hits.
 
     Returns:
-    Each training data X item contains:
-    - 2d-array (r,c) raw semantic_map from LDS data alone
-    Each training data Y item contains:
-    - 2d-array (r,c) expected semantic_map
+      Each training data X item contains:
+        2d-array (r,c) raw semantic_map from LDS data alone
+      Each training data Y item contains:
+        2d-array (r,c) expected semantic_map
     """
     pixel_size = kwargs.get('pixel_size', 1.0)
 
@@ -65,31 +65,31 @@ def generate_training_data_sample(semantic_map, centre, angle, **kwargs):
     the specified center is within the bounds of the pixels (all LDS ranges have value ~0.0),
     or if there are no LDS hits (all LDS ranges are NaN).
 
-    Parameters:
-    - semantic_map: array (r,c) of bool or float
+    Args:
+      semantic_map: array (r,c) of bool or float
         Encoded as a 2D array of values.
-    - centre: [x,y] of float
+      centre: [x,y] of float
         Point from which LDS sample is taken (unit: physical units)
-    - angle: float
+      angle: float
         Starting angle of LDS sample (unit: radians)
 
     Keyword args:
-    - max_distance: float, default: 100
+      max_distance: float, default: 100
         Maximum distance that an LDS can observe (unit: physical units)
-    - pixel_size: float, default: 1.0.
+      pixel_size: float, default: 1.0.
         The size of the pixel in the desired physical unit.
         Defaults to 1.0, meaning that we output in pixel units.
-    - nothing_value: bool or float, default: min value from semantic_map
+      nothing_value: bool or float, default: min value from semantic_map
         The data value that indicates nothing is present at the pixel.
         All other values are treated as pixels.
-    - occupied_value: bool or float, default: max value from semantic_map
+      occupied_value: bool or float, default: max value from semantic_map
         The data value used by LDS hits.
 
     Returns:
-    (lds_map, ground_truth_map), where:
-      - lds_map: array (r,c) of bool or flat
+      (lds_map, ground_truth_map), where:
+      lds_map: array (r,c) of bool or flat
           Square max_distance x max_distance semantic map populated from LDS data alone.
-      - ground_truth_map: array (r,c) of bool or flat
+      ground_truth_map: array (r,c) of bool or flat
           Square max_distance x max_distance masked snapshot from ground truth source semantic map.
     """
     # config
@@ -134,19 +134,19 @@ def rotated_crop(image, centre, angle, size, **kwargs):
     Takes a crop of a particular size and angle from any image-like source.
     Fills in any unknown areas with zeros.
 
-    Arguments:
-    - image: array (r,c) of bool, uint8, float32, etc.
+    Args:
+      image: array (r,c) of bool, uint8, float32, etc.
         The image to take a crop from.
-    - centre: [x,y] of float
+      centre: [x,y] of float
         Centre of the crop, with sub-pixel precision.
         May be outside the image bounds.
-    - angle: float
+      angle: float
         The angle of the crop in radians, counterclockwise.
-    - size: [w,h] of int
+      size: [w,h] of int
         The size of the crop.
 
     Keyword Args:
-    - mask: str (optional), default: 'none
+      mask: str (optional), default: 'none
         The mask to apply after cropping, zeroing out anything
         that isn't accepted by the mask.
         Mask is one of:

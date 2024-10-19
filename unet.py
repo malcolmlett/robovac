@@ -18,21 +18,21 @@ def unet_model(input_size, n_filters, n_classes, **kwargs):
     Automatically adds padding layers to ensure that the input has dimensions
     that are multiples of 2**4 = 16.
 
-    Arguments:
-    - input_size: tuple of int, (x, y, channels)
+    Args:
+      input_size: tuple of int, (x, y, channels)
         Input shape
-    - n_filters: int
+      n_filters: int
         Number of filters for the convolutional layers
-    - n_classes: int
+      n_classes: int
         Number of output classes
 
     Keyword args:
-    - merge_mode -- str, default: 'concat'
+      merge_mode -- str, default: 'concat'
         One of: 'concat' or 'add'.
         How skip connection should be combined with up-scaled input.
 
     Returns:
-    - model -- tf.keras.Model
+      model -- tf.keras.Model
     """
 
     merge_mode = kwargs.get('merge_mode', 'concat')
@@ -91,18 +91,18 @@ def unet_conv_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
     """
     Convolutional downsampling block.
 
-    Arguments:
-    - inputs:
+    Args:
+      inputs:
         Input tensor
-    - n_filters: int
+      n_filters: int
         Number of filters for the convolutional layers
-    - dropout_prob: float, default: 0.0
+      dropout_prob: float, default: 0.0
         Dropout probability
-    - max_pooling: bool, default True
+      max_pooling: bool, default True
         Use MaxPooling2D to reduce the spatial dimensions of the output volume
 
     Returns:
-    - next_layer, skip_connection --  Next layer and skip connection outputs
+      next_layer, skip_connection --  Next layer and skip connection outputs
     """
 
     conv = Conv2D(filters=n_filters,
@@ -138,18 +138,18 @@ def unet_upsampling_block(expansive_input, contractive_input, n_filters, **kwarg
     """
     Convolutional upsampling block
 
-    Arguments:
-    - expansive_input -- Input tensor from previous layer
-    - contractive_input -- Input tensor from previous skip layer
-    - n_filters -- Number of filters for the convolutional layers
+    Args:
+      expansive_input: Input tensor from previous layer
+      contractive_input: Input tensor from previous skip layer
+      n_filters: Number of filters for the convolutional layers
 
     Keyword args:
-    - merge_mode -- str, default: 'concat'
+      merge_mode: str, default: 'concat'
         One of: 'concat' or 'add'.
         How skip connection should be combined with up-scaled input.
 
     Returns:
-    - conv -- Tensor output
+      conv - Tensor output
     """
 
     merge_mode = kwargs.get('merge_mode', 'concat')
