@@ -27,15 +27,21 @@ def unet_model(input_size, n_filters, n_classes, **kwargs):
         Number of output classes
 
     Keyword args:
-      merge_mode -- str, default: 'concat'
+      merge_mode: str, default: 'concat'
         One of: 'concat' or 'add'.
         How skip connection should be combined with up-scaled input.
+      kernel_size: int, default: 3
+        Size of square convolutional kernels used throughout.
+      output_logits: bool, default: True
+        Whether to output logits, or softmax otherwise.
 
     Returns:
       model -- tf.keras.Model
     """
 
     merge_mode = kwargs.get('merge_mode', 'concat')
+    kernel_size = kwargs.get('kernel_size', '3')
+    output_logits = kwargs.get('output_logits', True)
 
     # Prepare input
     # (Pad up to the nearest multiple of 16 if needed)
@@ -50,33 +56,37 @@ def unet_model(input_size, n_filters, n_classes, **kwargs):
         padded_inputs = inputs
 
     print(f"Skip-connection merge mode: {merge_mode}")
+    print("Output: " + ("logits" if output_logits else "softmax"))
 
     # Contracting Path (encoding)
     # (each block here returns two outputs (downsampled, convolved-only),
     #  the latter is used for skip-connections)
-    cblock1 = unet_conv_block(padded_inputs, n_filters)
-    cblock2 = unet_conv_block(cblock1[0], n_filters*2)
-    cblock3 = unet_conv_block(cblock2[0], n_filters*4)
-    cblock4 = unet_conv_block(cblock3[0], n_filters*8, dropout_prob=0.3)
+    cblock1 = unet_conv_block(padded_inputs, n_filters, kernel_size=kernel_size)
+    cblock2 = unet_conv_block(cblock1[0], n_filters*2, kernel_size=kernel_size)
+    cblock3 = unet_conv_block(cblock2[0], n_filters*4, kernel_size=kernel_size)
+    cblock4 = unet_conv_block(cblock3[0], n_filters*8, dropout_prob=0.3, kernel_size=kernel_size)
 
     # Bottom layer (no scale changes)
-    cblock5 = unet_conv_block(cblock4[0], n_filters*16, dropout_prob=0.3, max_pooling=False)
+    cblock5 = unet_conv_block(cblock4[0], n_filters*16, dropout_prob=0.3, max_pooling=False, kernel_size=kernel_size)
 
     # Expanding Path (decoding)
     # (feed in skip-connections
-    ublock6 = unet_upsampling_block(cblock5[0], cblock4[1], n_filters*8, merge_mode=merge_mode)
-    ublock7 = unet_upsampling_block(ublock6, cblock3[1], n_filters*4, merge_mode=merge_mode)
-    ublock8 = unet_upsampling_block(ublock7, cblock2[1], n_filters*2, merge_mode=merge_mode)
-    ublock9 = unet_upsampling_block(ublock8, cblock1[1], n_filters, merge_mode=merge_mode)
+    ublock6 = unet_upsampling_block(cblock5[0], cblock4[1], n_filters*8, merge_mode=merge_mode, kernel_size=kernel_size)
+    ublock7 = unet_upsampling_block(ublock6, cblock3[1], n_filters*4, merge_mode=merge_mode, kernel_size=kernel_size)
+    ublock8 = unet_upsampling_block(ublock7, cblock2[1], n_filters*2, merge_mode=merge_mode, kernel_size=kernel_size)
+    ublock9 = unet_upsampling_block(ublock8, cblock1[1], n_filters, merge_mode=merge_mode, kernel_size=kernel_size)
 
     conv9 = Conv2D(n_filters,
-                   kernel_size=(3, 3),
+                   kernel_size=kernel_size,
                    activation='relu',
                    padding='same',
                    kernel_initializer='he_normal')(ublock9)
 
     # Collapse channels down to output desired classes - using logits so no activation function
-    conv10 = Conv2D(filters=n_classes, kernel_size=(1, 1), padding='same')(conv9)
+    final_activation = None
+    if not output_logits:
+        final_activation = 'softmax'
+    conv10 = Conv2D(filters=n_classes, kernel_size=(1, 1), padding='same', activation=final_activation)(conv9)
 
     outputs = conv10
     if pad_h > 0 or pad_w > 0:
@@ -87,7 +97,7 @@ def unet_model(input_size, n_filters, n_classes, **kwargs):
     return model
 
 
-def unet_conv_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
+def unet_conv_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True, kernel_size=3):
     """
     Convolutional downsampling block.
 
@@ -100,18 +110,20 @@ def unet_conv_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
         Dropout probability
       max_pooling: bool, default True
         Use MaxPooling2D to reduce the spatial dimensions of the output volume
+      kernel_size: int, default: 3
+        Size of square convolutional kernels used throughout.
 
     Returns:
       next_layer, skip_connection --  Next layer and skip connection outputs
     """
 
     conv = Conv2D(filters=n_filters,
-                  kernel_size=(3, 3),
+                  kernel_size=kernel_size,
                   activation='relu',
                   padding='same',
                   kernel_initializer='he_normal')(inputs)
     conv = Conv2D(filters=n_filters,
-                  kernel_size=(3, 3),
+                  kernel_size=kernel_size,
                   activation='relu',
                   padding='same',
                   # set 'kernel_initializer' same as above
@@ -134,7 +146,7 @@ def unet_conv_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
     return next_layer, skip_connection
 
 
-def unet_upsampling_block(expansive_input, contractive_input, n_filters, **kwargs):
+def unet_upsampling_block(expansive_input, contractive_input, n_filters, kernel_size=3, **kwargs):
     """
     Convolutional upsampling block
 
@@ -142,6 +154,8 @@ def unet_upsampling_block(expansive_input, contractive_input, n_filters, **kwarg
       expansive_input: Input tensor from previous layer
       contractive_input: Input tensor from previous skip layer
       n_filters: Number of filters for the convolutional layers
+      kernel_size: int, default: 3
+        Size of square convolutional kernels used throughout.
 
     Keyword args:
       merge_mode: str, default: 'concat'
@@ -156,7 +170,7 @@ def unet_upsampling_block(expansive_input, contractive_input, n_filters, **kwarg
 
     up = Conv2DTranspose(
                  filters=n_filters,
-                 kernel_size=(3, 3),
+                 kernel_size=kernel_size,
                  strides=2,
                  padding='same')(expansive_input)
 
@@ -169,12 +183,12 @@ def unet_upsampling_block(expansive_input, contractive_input, n_filters, **kwarg
         raise ValueError(f"Unknown merge mode: {merge_mode}")
 
     conv = Conv2D(n_filters,
-                  kernel_size=(3, 3),
+                  kernel_size=kernel_size,
                   activation='relu',
                   padding='same',
                   kernel_initializer='he_normal')(merge)
     conv = Conv2D(n_filters,
-                  kernel_size=(3, 3),
+                  kernel_size=kernel_size,
                   activation='relu',
                   padding='same',
                   kernel_initializer='he_normal')(conv)
