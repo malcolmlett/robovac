@@ -30,7 +30,7 @@ def unet_model(input_size, n_filters, n_classes, **kwargs):
       merge_mode: str, default: 'concat'
         One of: 'concat' or 'add'.
         How skip connection should be combined with up-scaled input.
-      kernel_size: int, default: 3
+      kernel_size: int or tuple/list of 2 integers, default: 3
         Size of square convolutional kernels used throughout.
       output_logits: bool, default: True
         Whether to output logits, or softmax otherwise.
@@ -40,7 +40,7 @@ def unet_model(input_size, n_filters, n_classes, **kwargs):
     """
 
     merge_mode = kwargs.get('merge_mode', 'concat')
-    kernel_size = kwargs.get('kernel_size', '3')
+    kernel_size = kwargs.get('kernel_size', 3)
     output_logits = kwargs.get('output_logits', True)
 
     # Prepare input
