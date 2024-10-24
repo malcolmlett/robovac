@@ -61,6 +61,7 @@
 # - note: under this definition there is no concern over which order the delta location or orientation are applied,
 #   as they are applied to the estimate of the agent's coordinates, not to the maps.
 
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Input
 from tensorflow.keras.layers import Conv2D
@@ -74,7 +75,7 @@ from tensorflow.keras.layers import Concatenate
 from tensorflow.keras.layers import Add
 
 
-def slam_model(input_size, conv_filters, adlo_units, n_classes, **kwargs):
+def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     """
     Constructs a basic UNet model.
 
@@ -83,15 +84,14 @@ def slam_model(input_size, conv_filters, adlo_units, n_classes, **kwargs):
     that are multiples of 2**4 = 16.
 
     Args:
-      input_size: tuple of int, (x, y, channels)
-        Input shape of both input images
+      map_shape: tuple of int, (height, width, channels)
+        Size and shape of window used for input and output map representation.
+        Implies LDS inputs have shape (batch, height, width).
       conv_filters: int
         Base number of filters for the top-most convolutional layers.
         Deeper layers have powers-of-2 multiplies of this number.
       adlo_units: int
         Number of units at each fully-connected layer within ADLO block (Accept, delta Location/Orientation)
-      n_classes: int
-        Number of output classes
 
     Keyword args:
       merge_mode: str, default: 'concat'
@@ -107,17 +107,27 @@ def slam_model(input_size, conv_filters, adlo_units, n_classes, **kwargs):
     merge_mode = kwargs.get('merge_mode', 'concat')
     output_logits = kwargs.get('output_logits', True)
 
-    # Prepare inputs
-    # (TODO probably need to construct full size tuple, as lds_input doesn't have channels)
-    print(f"Input size: {input_size}")
-    map_input = Input(input_size)
-    map_input, pad_w, pad_h = pad_block(map_input)
+    # Sanity check
+    if np.size(map_shape) != 3:
+      raise ValueError("Map shape must have 3 dims, found {np.size(map_shape)}")
 
-    lds_input = Input(input_size)
-    lds_input, _, _ = pad_block(input_size)
+    # Prepare map input
+    # (pad so it's a multiple of our down/up-scaling blocks)
+    map_input = Input(shape=map_shape)
+    map_input, pad_w, pad_h = pad_block(map_input, map_shape)
+    n_classes = map_shape[2]
+    print(f"Map shape: {map_shape} + padding ({pad_h}, {pad_w}, 0)")
+
+    # Prepare LDS input
+    # (convert from (B,H,W) to (B,H,W,1) to make later work easier)
+    # (pad so it's a multiple of our down/up-scaling blocks)
+    lds_shape = (map_shape[0], map_shape[1], 1)
+    lds_input = Input(shape=(map_shape[0], map_shape[1]))  # raw input omits channels axis
+    lds_input = tf.keras.layers.Reshape(target_shape=lds_shape)(lds_input)
+    lds_input, _, _ = pad_block(lds_input, lds_shape)
 
     print(f"Skip-connection merge mode: {merge_mode}")
-    print("Output: " + ("logits" if output_logits else "softmax"))
+    print("Output: " + ("logits" if output_logits else "scaled"))
 
     # Map downsampling input arm
     # (each block here returns two outputs (downsampled, convolved-only),
@@ -175,7 +185,6 @@ def pad_block(input, input_size):
     pad_h = 16 - input_size[0] % 16
     pad_w = 16 - input_size[1] % 16
     if pad_h > 0 or pad_w > 0:
-        print(f"Added padding layer: w={pad_w}, h={pad_h}")
         padded_input = ZeroPadding2D(padding=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(input)
     else:
         padded_input = input
