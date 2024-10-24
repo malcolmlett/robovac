@@ -126,9 +126,8 @@ def generate_training_data_sample(semantic_map, centre, angle, **kwargs):
 # - Usually operating with a large crop that spans much of the original image.
 # Algorithm:
 # - Rotates the full image in the opposite direction,
-#   with some extra padding so we don't loose anything
+#   with some extra padding so we don't lose anything
 # - Then takes a simple rectangular crop
-# - But does have to deal with clipping at the edges
 def rotated_crop(image, centre, angle, size, **kwargs):
     """
     Takes a crop of a particular size and angle from any image-like source.
@@ -161,7 +160,7 @@ def rotated_crop(image, centre, angle, size, **kwargs):
     if target_type == 'bool':
         image = image.astype(np.uint8)
 
-    # pad original image so we don't loose things when we rotate it
+    # pad original image so we don't lose things when we rotate it
     # The amount of pad required differs by:
     #   - image size
     #       - roughly, adding an extra sqrt(1/2)*image_width to cope with the image
@@ -170,6 +169,10 @@ def rotated_crop(image, centre, angle, size, **kwargs):
     #       - if we're rotating about a point on the edge of the image, then we
     #         want room available in the target location for the crop
     # Experiments have shown that we only need to cope with the latter.
+
+    # config
+    # (normalise data type)
+    centre = np.array(centre).astype(np.float32)
 
     # eventual crop window without clipping
     # (using some calculations as below, but note that we'll need to re-calculate after padding
