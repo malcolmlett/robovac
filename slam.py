@@ -113,8 +113,8 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
 
     # Prepare map input
     # (pad so it's a multiple of our down/up-scaling blocks)
-    map_input = Input(shape=map_shape)
-    map_input, pad_w, pad_h = pad_block(map_input, map_shape)
+    map_input = Input(shape=map_shape, name='map_input')
+    map_down, pad_w, pad_h = pad_block(map_input, map_shape)
     n_classes = map_shape[2]
     print(f"Map shape: {map_shape} + padding ({pad_h}, {pad_w}, 0)")
 
@@ -122,9 +122,9 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     # (convert from (B,H,W) to (B,H,W,1) to make later work easier)
     # (pad so it's a multiple of our down/up-scaling blocks)
     lds_shape = (map_shape[0], map_shape[1], 1)
-    lds_input = Input(shape=(map_shape[0], map_shape[1]))  # raw input omits channels axis
-    lds_input = tf.keras.layers.Reshape(target_shape=lds_shape)(lds_input)
-    lds_input, _, _ = pad_block(lds_input, lds_shape)
+    lds_input = Input(shape=(map_shape[0], map_shape[1]), name='lds_input')  # raw input omits channels axis
+    lds_down = tf.keras.layers.Reshape(target_shape=lds_shape)(lds_input)
+    lds_down, _, _ = pad_block(lds_down, lds_shape)
 
     print(f"Skip-connection merge mode: {merge_mode}")
     print("Output: " + ("logits" if output_logits else "scaled"))
@@ -132,13 +132,13 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     # Map downsampling input arm
     # (each block here returns two outputs (downsampled, convolved-only),
     #  the latter is used for skip-connections)
-    map_down, map_skip1 = slam_down_block(map_input, conv_filters)
+    map_down, map_skip1 = slam_down_block(map_down, conv_filters)
     map_down, map_skip2 = slam_down_block(map_down, conv_filters * 2)
     map_down, map_skip3 = slam_down_block(map_down, conv_filters * 4)
     map_down, map_skip4 = slam_down_block(map_down, conv_filters * 8, dropout_prob=0.3)
 
     # LDS downsampling input arm
-    lds_down, lds_skip1 = slam_down_block(lds_input, conv_filters)
+    lds_down, lds_skip1 = slam_down_block(lds_down, conv_filters)
     lds_down, lds_skip2 = slam_down_block(lds_down, conv_filters * 2)
     lds_down, lds_skip3 = slam_down_block(lds_down, conv_filters * 4)
     lds_down, lds_skip4 = slam_down_block(lds_down, conv_filters * 8, dropout_prob=0.3)
@@ -163,7 +163,10 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
                      activation='relu',
                      padding='same',
                      kernel_initializer='he_normal')(up)
-    map_out = Conv2D(filters=n_classes, kernel_size=(1, 1), padding='same', activation=final_activation)(map_out)
+    map_out = Conv2D(filters=n_classes,
+                     kernel_size=(1, 1),
+                     padding='same',
+                     activation=final_activation)(map_out)
     if pad_h > 0 or pad_w > 0:
         print(f"Added final cropping layer: w={pad_w}, h={pad_h}")
         map_out = Cropping2D(cropping=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(map_out)
