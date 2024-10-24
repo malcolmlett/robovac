@@ -66,6 +66,7 @@ import tensorflow as tf
 from tensorflow.keras.layers import Input
 from tensorflow.keras.layers import Conv2D
 from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Flatten
 from tensorflow.keras.layers import MaxPooling2D
 from tensorflow.keras.layers import ZeroPadding2D
 from tensorflow.keras.layers import Cropping2D
@@ -174,7 +175,7 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     # Accept and Delta location/orientation output
     adlo_out = adlo_block(bottom, adlo_units, output_logits)
 
-    model = tf.keras.Model(inputs=map_input, outputs=[map_out, adlo_out])
+    model = tf.keras.Model(inputs=[map_input, lds_input], outputs=[map_out, adlo_out])
     return model
 
 
@@ -309,7 +310,8 @@ def adlo_block(input, n_units, output_logits):
     """
 
     # Apply some fully-connected layers
-    adlo = Dense(units=n_units, activation='relu')(input)
+    adlo = Flatten()(input)
+    adlo = Dense(units=n_units, activation='relu')(adlo)
     adlo = Dense(units=n_units, activation='relu')(adlo)
 
     # Squish down into our output shape
