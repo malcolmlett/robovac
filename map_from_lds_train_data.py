@@ -145,15 +145,21 @@ def rotated_crop(image, centre, angle, size, **kwargs):
         The size of the crop.
 
     Keyword Args:
+      pad_value: scalar or array (C)
+        Value to use for padding and masking.
+        If an array, must have length equal to the number of channels.
       mask: str (optional), default: 'none
-        The mask to apply after cropping, zeroing out anything
-        that isn't accepted by the mask.
+        The mask to apply after cropping, blanking anything
+        that isn't accepted by the mask (uses pad_value).
         Mask is one of:
           - 'none' - do mask
           - 'inner-circle' - retains only the inner circle
     """
     # config
     mask = kwargs.get('mask', 'none')
+    pad_value = kwargs.get('pad_value', 0.0)
+    n_channels = image.shape[-1]
+    pad_value = pad_value if np.size(pad_value) == n_channels else np.repeat(pad_value, n_channels)
 
     # handle boolean image types
     target_type = image.dtype
@@ -182,6 +188,9 @@ def rotated_crop(image, centre, angle, size, **kwargs):
     y1 = int(centre[1] - (size[1] - 1) / 2)
     y2 = int(centre[1] - (size[1] - 1) / 2) + size[1]
 
+    # Apply padding
+    # (note that opencv is designed for images so only takes a scalar for 'value'.
+    #  So we have to convert to the pad_value afterwards)
     pad_x1 = max(0, -x1)
     pad_x2 = max(0, x2 - image.shape[1])
     pad_y1 = max(0, -y1)
@@ -223,6 +232,9 @@ def rotated_crop(image, centre, angle, size, **kwargs):
         cropped = cropped * mask
     else:
         raise ValueError(f"Unknown mask type: {mask}")
+
+    # Apply pad_value for all empty pixels
+    cropped[np.max(cropped, axis=-1) == 0, :] = pad_value
 
     # convert back to target type
     if target_type == 'bool':
