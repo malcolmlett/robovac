@@ -47,19 +47,24 @@
 #   location winning out.
 # - When performing map update with known estimate, the 'accept' output is used to identify when
 #   the agent has been unexpectedly moved.
+# - when outputting raw logits, the value needs to have the following expression applied: sigmoid(o)
 #
 # Output delta location:
-# - delta x,y as percentage of window size
-# - probably prefer a linear activation function at the end, or perhaps tanh so that it can be
-#   more accurate near the centre.
+# - The delta update to the current estimate of the agent location within the source map
+# - delta x,y as percentage of window size, each in range -0.5 .. +0.5
+# - when outputting raw logits, the values need to have the following expression applied: tanh(o) * 0.5
 #
 # Output delta orientation:
-# - delta angle in some format yet to be decided.
-# - I also haven't decided which order the delta location and orientation should be applied in.
+# - The delta update to the current estimate of the agent orientation within the source map
+# - delta angle as a multiple of pi, in range -1.0 .. +1.0
+# - when outputting raw logits, the value needs to have the following expression applied: tanh(o)
+# - note: under this definition there is no concern over which order the delta location or orientation are applied,
+#   as they are applied to the estimate of the agent's coordinates, not to the maps.
 
 import tensorflow as tf
 from tensorflow.keras.layers import Input
 from tensorflow.keras.layers import Conv2D
+from tensorflow.keras.layers import Dense
 from tensorflow.keras.layers import MaxPooling2D
 from tensorflow.keras.layers import ZeroPadding2D
 from tensorflow.keras.layers import Cropping2D
@@ -69,7 +74,7 @@ from tensorflow.keras.layers import Concatenate
 from tensorflow.keras.layers import Add
 
 
-def slam_model(input_size, n_filters, n_classes, **kwargs):
+def slam_model(input_size, conv_filters, adlo_units, n_classes, **kwargs):
     """
     Constructs a basic UNet model.
 
@@ -80,8 +85,11 @@ def slam_model(input_size, n_filters, n_classes, **kwargs):
     Args:
       input_size: tuple of int, (x, y, channels)
         Input shape of both input images
-      n_filters: int
-        Number of filters for the convolutional layers
+      conv_filters: int
+        Base number of filters for the top-most convolutional layers.
+        Deeper layers have powers-of-2 multiplies of this number.
+      adlo_units: int
+        Number of units at each fully-connected layer within ADLO block (Accept, delta Location/Orientation)
       n_classes: int
         Number of output classes
 
@@ -114,55 +122,61 @@ def slam_model(input_size, n_filters, n_classes, **kwargs):
     # Map downsampling input arm
     # (each block here returns two outputs (downsampled, convolved-only),
     #  the latter is used for skip-connections)
-    map_down, map_skip1 = slam_down_block(map_input, n_filters)
-    map_down, map_skip2 = slam_down_block(map_down, n_filters*2)
-    map_down, map_skip3 = slam_down_block(map_down, n_filters*4)
-    map_down, map_skip4 = slam_down_block(map_down, n_filters*8, dropout_prob=0.3)
+    map_down, map_skip1 = slam_down_block(map_input, conv_filters)
+    map_down, map_skip2 = slam_down_block(map_down, conv_filters * 2)
+    map_down, map_skip3 = slam_down_block(map_down, conv_filters * 4)
+    map_down, map_skip4 = slam_down_block(map_down, conv_filters * 8, dropout_prob=0.3)
 
     # LDS downsampling input arm
-    lds_down, lds_skip1 = slam_down_block(lds_input, n_filters)
-    lds_down, lds_skip2 = slam_down_block(lds_down, n_filters*2)
-    lds_down, lds_skip3 = slam_down_block(lds_down, n_filters*4)
-    lds_down, lds_skip4 = slam_down_block(lds_down, n_filters*8, dropout_prob=0.3)
+    lds_down, lds_skip1 = slam_down_block(lds_input, conv_filters)
+    lds_down, lds_skip2 = slam_down_block(lds_down, conv_filters * 2)
+    lds_down, lds_skip3 = slam_down_block(lds_down, conv_filters * 4)
+    lds_down, lds_skip4 = slam_down_block(lds_down, conv_filters * 8, dropout_prob=0.3)
 
-    # Bottom layer (no scale changes)
-    bottom, _ = slam_down_block(map_down, n_filters*16, dropout_prob=0.3, max_pooling=False)
+    # Bottom layer
+    # (combine both input arms, apply some final convolutions, leave at same scale)
+    bottom = Concatenate(axis=3)([map_down, lds_down])
+    bottom, _ = slam_down_block(bottom, conv_filters * 16, dropout_prob=0.3, max_pooling=False)
 
     # Upsampling output arm
-    up = slam_up_block(bottom, map_skip4, lds_skip4, n_filters*8, **kwargs)
-    up = slam_up_block(up, map_skip3, lds_skip3, n_filters*4, **kwargs)
-    up = slam_up_block(up, map_skip2, lds_skip2, n_filters*2, **kwargs)
-    up = slam_up_block(up, map_skip1, lds_skip1, n_filters, **kwargs)
+    up = slam_up_block(bottom, map_skip4, lds_skip4, conv_filters * 8, **kwargs)
+    up = slam_up_block(up, map_skip3, lds_skip3, conv_filters * 4, **kwargs)
+    up = slam_up_block(up, map_skip2, lds_skip2, conv_filters * 2, **kwargs)
+    up = slam_up_block(up, map_skip1, lds_skip1, conv_filters, **kwargs)
 
-    map_out = Conv2D(n_filters,
-                   kernel_size=(3, 3),
-                   activation='relu',
-                   padding='same',
-                   kernel_initializer='he_normal')(up)
-
-    # Collapse channels down to output desired classes - using logits so no activation function
-    final_activation = None
-    if not output_logits:
-        final_activation = 'softmax'
+    # Final map output
+    # (one last convolve, collapse channels down to desired number of output classes, output either logits or softmax,
+    #  and remove padding)
+    final_activation = None if output_logits else 'softmax'
+    map_out = Conv2D(conv_filters,
+                     kernel_size=(3, 3),
+                     activation='relu',
+                     padding='same',
+                     kernel_initializer='he_normal')(up)
     map_out = Conv2D(filters=n_classes, kernel_size=(1, 1), padding='same', activation=final_activation)(map_out)
-
     if pad_h > 0 or pad_w > 0:
         print(f"Added final cropping layer: w={pad_w}, h={pad_h}")
         map_out = Cropping2D(cropping=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(map_out)
 
     # Accept and Delta location/orientation output
-    accept, delta = ...
+    adlo_out = adlo_block(bottom, adlo_units, output_logits)
 
-    model = tf.keras.Model(inputs=map_input, outputs=[map_out, accept, delta])
+    model = tf.keras.Model(inputs=map_input, outputs=[map_out, adlo_out])
     return model
 
 
 def pad_block(input, input_size):
+    """
+    Works out if padding is required and applies it if needed.
+    :param input: Input image or map tensor (B,H,W,...)
+    :param input_size: size of input (H,W,...)
+    :return: padded input (B,H+pad_h,W+pad_w,...), total padded width, total padded height
+    """
     pad_h = 16 - input_size[0] % 16
     pad_w = 16 - input_size[1] % 16
     if pad_h > 0 or pad_w > 0:
         print(f"Added padding layer: w={pad_w}, h={pad_h}")
-        padded_input = ZeroPadding2D(padding=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(map_input)
+        padded_input = ZeroPadding2D(padding=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(input)
     else:
         padded_input = input
     return padded_input, pad_w, pad_h
@@ -264,3 +278,37 @@ def slam_up_block(up_input, skip_input1, skip_input2, n_filters, **kwargs):
                   kernel_initializer='he_normal')(conv)
 
     return conv
+
+
+def adlo_block(input, n_units, output_logits):
+    """
+    Accept and Delta Location/Orientation block.
+
+    Generates an output tensor in the form of a vector (per batch row):
+    - accept: logit/sigmoid - likelihood that the agent is present within the map, based on the LDS data
+    - delta x: logit/(tanh/2) - percentage of window width to add to current estimated x-location
+    - delta y: logit/(tanh/2) - percentage of window width to add to current estimated y-location
+    - delta angle: logit/tanh - fraction of pi (+/-) to add to current estimated orientation
+
+    :param input: Input tensor
+    :param n_units: number of units in hidden layers
+    :param output_logits: whether to output logits or scaled
+    :return: adlo output (B,4)
+    """
+
+    # Apply some fully-connected layers
+    adlo = Dense(units=n_units, activation='relu')(input)
+    adlo = Dense(units=n_units, activation='relu')(adlo)
+
+    # Squish down into our output shape
+    output = Dense(units=4)(adlo)
+
+    # (Optional) Apply activations
+    if not output_logits:
+        accept = tf.nn.sigmoid(output[:, 0])  # accept prob in range 0.0 .. 1.0
+        delta_x = tf.nn.tanh(output[:, 2]) * 0.5  # delta x in range -0.5 .. +0.5 (fraction of window size)
+        delta_y = tf.nn.tanh(output[:, 3]) * 0.5  # delta y in range -0.5 .. +0.5 (fraction of window size)
+        delta_angle = tf.nn.tanh(output[:, 1])  # delta angle in range -1.0 .. 1.0 (multiples of pi)
+        output = tf.stack([accept, delta_x, delta_y, delta_angle], axis=1)
+
+    return output
