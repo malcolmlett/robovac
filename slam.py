@@ -309,8 +309,15 @@ def adlo_block(input, n_units, output_logits):
     :return: adlo output (B,4)
     """
 
+    # Reduce the level of dimensionality and flatten
+    adlo = Conv2D(16,
+                  kernel_size=(3, 3),
+                  activation='relu',
+                  padding='same',
+                  kernel_initializer='he_normal')(input)
+    adlo = Flatten()(adlo)
+
     # Apply some fully-connected layers
-    adlo = Flatten()(input)
     adlo = Dense(units=n_units, activation='relu')(adlo)
     adlo = Dense(units=n_units, activation='relu')(adlo)
 
