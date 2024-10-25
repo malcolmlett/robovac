@@ -159,6 +159,7 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     # (one last convolve, collapse channels down to desired number of output classes, output either logits or softmax,
     #  and remove padding)
     final_activation = None if output_logits else 'softmax'
+    final_conv_name = 'map_output' if pad_h == 0 and pad_w == 0 else None
     map_out = Conv2D(conv_filters,
                      kernel_size=(3, 3),
                      activation='relu',
@@ -167,10 +168,12 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     map_out = Conv2D(filters=n_classes,
                      kernel_size=(1, 1),
                      padding='same',
-                     activation=final_activation)(map_out)
+                     activation=final_activation,
+                     name=final_conv_name)(map_out)
     if pad_h > 0 or pad_w > 0:
         print(f"Added final cropping layer: w={pad_w}, h={pad_h}")
-        map_out = Cropping2D(cropping=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(map_out)
+        map_out = Cropping2D(cropping=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)),
+                             name='map_output')(map_out)
 
     # Accept and Delta location/orientation output
     adlo_out = adlo_block(bottom, adlo_units, output_logits)
@@ -322,14 +325,17 @@ def adlo_block(input, n_units, output_logits):
     adlo = Dense(units=n_units, activation='relu')(adlo)
 
     # Squish down into our output shape
-    output = Dense(units=4)(adlo)
+    final_dense_name = 'adlo_output' if output_logits else None
+    output = Dense(units=4, name=final_dense_name)(adlo)
 
     # (Optional) Apply activations
+    # (TODO this won't work, it needs to wrap the logic in a named layer)
     if not output_logits:
         accept = tf.nn.sigmoid(output[:, 0])  # accept prob in range 0.0 .. 1.0
         delta_x = tf.nn.tanh(output[:, 2]) * 0.5  # delta x in range -0.5 .. +0.5 (fraction of window size)
         delta_y = tf.nn.tanh(output[:, 3]) * 0.5  # delta y in range -0.5 .. +0.5 (fraction of window size)
         delta_angle = tf.nn.tanh(output[:, 1])  # delta angle in range -1.0 .. 1.0 (multiples of pi)
         output = tf.stack([accept, delta_x, delta_y, delta_angle], axis=1)
+        # TODO set last layer as 'adlo_output'
 
     return output
