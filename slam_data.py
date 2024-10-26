@@ -319,7 +319,6 @@ def show_dataset(dataset, num=5):
         show_data_sample(map_window, lds_map, ground_truth_map, adlo)
 
 
-# TODO do predictions in a single batch
 def show_predictions(model, dataset, num=5, **kwargs):
     """
     :param model: slam model
@@ -336,15 +335,10 @@ def show_predictions(model, dataset, num=5, **kwargs):
     if flexi:
         flexi_show_predictions(model, dataset, num, **kwargs)
     else:
-        for (map_window, lds_map), (ground_truth_map, adlo) in dataset.take(num):
-            map_input = tf.expand_dims(map_window, axis=0)
-            lds_input = tf.expand_dims(lds_map, axis=0)
-            batch = [map_input, lds_input]
-
-            batch_pred = model.predict(batch)
-
-            map_pred = batch_pred[0][0]
-            adlo_pred = batch_pred[1][0]
+        inputs, outputs = next(iter(dataset.batch(num)))
+        preds = model.predict(inputs)
+        for map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred in zip(
+                inputs[0], inputs[1], outputs[0], outputs[1], preds[0], preds[1]):
             show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs)
 
 
