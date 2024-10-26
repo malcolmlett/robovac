@@ -442,8 +442,7 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     cols = cols + (n_classes if map_pred_scaled is not None and show_classes else 0)
 
     # Show plots
-    figwith = 10.0 + 5.0 * ((cols-1) / 11)  # 10" to 15" for 5 to 11 cols
-    plt.figure(figsize=(figwith, 2))
+    plt.figure(figsize=(20, 2))  # limits by row height
     i = iter(range(1, cols+1))
 
     if map_window is not None:
