@@ -429,7 +429,8 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
 
     # Log details that are not so great in visual form
     print(f"adlo:             {adlo}")
-    print(f"adlo-predicted:   {adlo_pred_scaled}")
+    print(f"adlo-pred raw:    {adlo_pred}")
+    print(f"adlo-pred scaled: {adlo_pred_scaled}")
 
     # Calculate total number of plots to display
     cols = 0
