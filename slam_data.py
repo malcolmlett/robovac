@@ -319,6 +319,7 @@ def show_dataset(dataset, num=5):
         show_data_sample(map_window, lds_map, ground_truth_map, adlo)
 
 
+# TODO do predictions in a single batch
 def show_predictions(model, dataset, num=5, **kwargs):
     """
     :param model: slam model
@@ -458,8 +459,7 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     plt.show()
 
 
-
-
+# TODO merge flexibilities into show_prediction
 def flexi_show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred):
     # apply scaling
     map_pred_scaled = tf.nn.softmax(map_pred, axis=-1)

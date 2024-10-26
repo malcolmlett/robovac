@@ -117,7 +117,6 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     map_input = Input(shape=map_shape, name='map_input')
     map_down, pad_w, pad_h = pad_block(map_input, map_shape)
     n_classes = map_shape[2]
-    print(f"Map shape: {map_shape} + padding ({pad_h}, {pad_w}, 0)")
 
     # Prepare LDS input
     # (convert from (B,H,W) to (B,H,W,1) to make later work easier)
@@ -126,9 +125,6 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     lds_input = Input(shape=(map_shape[0], map_shape[1]), name='lds_input')  # raw input omits channels axis
     lds_down = tf.keras.layers.Reshape(target_shape=lds_shape)(lds_input)
     lds_down, _, _ = pad_block(lds_down, lds_shape)
-
-    print(f"Skip-connection merge mode: {merge_mode}")
-    print("Output: " + ("logits" if output_logits else "scaled"))
 
     # Map downsampling input arm
     # (each block here returns two outputs (downsampled, convolved-only),
@@ -179,6 +175,13 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     adlo_out = adlo_block(bottom, adlo_units, output_logits)
 
     model = tf.keras.Model(inputs=[map_input, lds_input], outputs=[map_out, adlo_out])
+
+    print(f"Prepared SLAM model")
+    print(f"  Map shape:        {map_shape} + padding ({pad_h}, {pad_w}, 0)")
+    print(f"  Skip-connections: {merge_mode}")
+    print(f"  Output scaling:   {'logits' if output_logits else 'scaled'}")
+    print(f"  Inputs:           {model.inputs}")
+    print(f"  Outputs:          {model.outputs}")
     return model
 
 
