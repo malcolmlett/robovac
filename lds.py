@@ -40,21 +40,6 @@ import math
 import numpy as np
 
 
-def lds_to_2d(ranges, centre, start_angle):
-    """
-    Converts LDS range data to Euclidean coordinates.
-    Applies a unit-less conversion, retaining the same unit in the 2D coords as used by the range values.
-    :param ranges: array (n,) - range values may contain nans, which are dropped
-    :param centre: array (2,) = [x,y] - centre point for ranges
-    :param start_angle: angle of first range (radians)
-    :return: array (n,2) of [x,y] coords (without nans)
-    """
-    angles = np.linspace(0, np.pi * 2, num=ranges.shape[0], endpoint=False) + start_angle
-    steps = np.column_stack((np.cos(angles), -np.sin(angles)))
-    points = steps * ranges.reshape(-1, 1) + centre
-    return points[~np.isnan(ranges)]
-
-
 # Algorithm:
 # 1. Initialise a grid of cached nearest-neighbour "bubbles", having a circular shape and containing a count + list of
 #    all pixels within its area.
@@ -321,3 +306,56 @@ def find_collision(start, direction, pixels, **kwargs):
             pixel_value = pixel_values[mask][idx]
 
     return intersection, distance, pixel_coord, pixel_value
+
+
+def lds_to_2d(ranges, centre, start_angle):
+    """
+    Converts LDS range data to Euclidean coordinates.
+    Applies a unit-less conversion, retaining the same unit in the 2D coords as used by the range values.
+    :param ranges: array (n,) - range values may contain nans, which are dropped
+    :param centre: array (2,) = [x,y] - centre point for ranges
+    :param start_angle: angle of first range (radians)
+    :return: array (n,2) of [x,y] coords (without nans)
+    """
+    angles = np.linspace(0, np.pi * 2, num=ranges.shape[0], endpoint=False) + start_angle
+    steps = np.column_stack((np.cos(angles), -np.sin(angles)))
+    points = steps * ranges.reshape(-1, 1) + centre
+    return points[~np.isnan(ranges)]
+
+
+def lds_to_occupancy_map(ranges, start_angle, size_px, **kwargs):
+    """
+    Converts LDS range data to a binary occupancy map.
+    :param ranges: array (n,) - range values may contain nans, which are dropped
+    :param start_angle: angle of first range (radians)
+    :param centre_px: array (2,) = float, [x,y] - centre point for ranges
+    :param size_px: int/float or tuple (h, w) = size of output map in pixels
+    :param kwargs
+
+    Keyword args:
+      pixel_size:
+      centre_px: tuple, float (x,y), relative to map centre (unit: pixels)
+        Usually centres LDS data exactly on centre of generated map (to sub-pixel resolution).
+        Use this to shift by some amount.
+      encoding: one of 'nn', 'antialiased', 'nn+offset':
+        nn: nearest neighbour
+        (TODO) antialised: blurs into adjacent pixels for implied sub-pixel resolution
+        (TODO) nn+offset: picks single NN pixel, but on second and third channels adds
+          x and y offset (-0.5 .. +0.5) in sub-pixel resolution
+
+    :return: array (h,w) of floats in range [0,1]
+    """
+
+    # config
+    pixel_size = kwargs.get('pixel_size', 1.0)
+    centre_px = kwargs.get('centre_px', (0.0, 0.0))
+    size_px = np.array(size_px) if len(size_px) == 2 else np.array([size_px, size_px])
+
+    map_centre_fpx = np.array((size_px-1) / 2) + np.array(centre_px)
+
+    lds_points = lds_to_2d(ranges, (0, 0), start_angle)
+    lds_points_px = np.round(lds_points/pixel_size + map_centre_fpx).astype(int)
+    lds_map = np.full(size_px, 0.0, dtype=np.float32)
+    lds_map[lds_points_px[:,1], lds_points_px[:,0]] = 1.0
+
+    return lds_map
