@@ -384,29 +384,41 @@ def flexi_show_predictions(model, dataset, num=1, **kwargs):
 
     for map_input, lds_input, ground_truth_map, adlo, map_pred, adlo_pred in zip(
             map_inputs, lds_inputs, ground_truth_maps, adlos, map_preds,adlo_preds):
-        # print(f"inputs:  {type(inputs)} x {len(inputs)}, {np.shape(inputs)}")
-        # print(f"outputs: {type(outputs)} x {len(outputs)}, {np.shape(outputs)}")
-        # print(f"preds:   {type(preds)} x {len(preds)}, {np.shape(preds)}")
-
         print(f"map_input: {np.shape(map_input)}")
         print(f"lds_input: {np.shape(lds_input)}")
         print(f"ground_truth_map: {np.shape(ground_truth_map)}")
         print(f"adlo: {np.shape(adlo)}")
         print(f"map_pred: {np.shape(map_pred)}")
         print(f"adlo_pred: {np.shape(adlo_pred)}")
-        flexi_show_prediction(map_input, lds_input, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs)
+        show_prediction(map_input, lds_input, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs)
 
 
 def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs):
+    """
+    :param map_window:
+    :param lds_map:
+    :param ground_truth_map:
+    :param adlo:
+    :param map_pred:
+    :param adlo_pred:
+
+    Keyword args:
+      show_classes: one of 'none' (or False), 'all' (or True), 'pred'
+    """
     from_logits = kwargs.get('from_logits', True)
-    show_classes = kwargs.get('show_classes', False)  # adds extra columns (TODO)
+    show_classes = kwargs.get('show_classes', 'none')
     map_size = np.array([map_window.shape[1], map_window.shape[0]])
+    n_classes = map_window.shape[-1]
+
+    if show_classes == True:
+        show_classes = 'all'
+    elif show_classes == False:
+        show_classes = 'none'
 
     # apply scaling
     map_pred_scaled = tf.nn.softmax(map_pred, axis=-1) if from_logits else map_pred
     map_pred_categorical = tf.argmax(map_pred_scaled, axis=-1)
-
-    if from_logits:
+    if from_logits and adlo_pred is not None:
         accept = tf.nn.sigmoid(adlo_pred[0])
         delta_x = tf.nn.tanh(adlo_pred[1]) * 0.5
         delta_y = tf.nn.tanh(adlo_pred[2]) * 0.5
@@ -415,154 +427,92 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     else:
         adlo_pred_scaled = adlo_pred
 
+    # Log details that are not so great in visual form
     print(f"adlo:             {adlo}")
     print(f"adlo-predicted:   {adlo_pred_scaled}")
 
-    plt.figure(figsize=(10, 2))
-    plt.subplot(1, 5, 1)
-    plt.title('Map')
-    plt.imshow(map_window)
-    plt.axis('off')
-    if adlo is not None:
-        centre = map_size / 2
-        error_loc = centre + adlo[1:3] * map_size
-        angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), np.sin(adlo[3] * np.pi)]) * 50
-        plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
-        plt.scatter(centre[0], centre[1], c='k', s=50)
-        plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
-    if not adlo[0]:
-        # if to be rejected, add cross through map
-        plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
-        plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
+    # Calculate total number of plots to display
+    cols = 0
+    cols = cols + (1 if map_window is not None else 0)
+    cols = cols + (1 if lds_map is not None else 0)
+    cols = cols + (1 if map_window is not None else 0)
+    cols = cols + (1 if ground_truth_map is not None else 0)
+    cols = cols + (n_classes if ground_truth_map is not None and show_classes else 0)
+    cols = cols + (1 if map_pred_categorical is not None else 0)
+    cols = cols + (n_classes if map_pred_scaled is not None and show_classes else 0)
 
-    plt.subplot(1, 5, 2)
-    plt.title('LDS')
-    plt.imshow(lds_map, cmap='gray')
-    plt.axis('off')
+    # Show plots
+    figwith = 10.0 + 5.0 * ((cols-1) / 11)  # 10" to 15" for 5 to 11 cols
+    plt.figure(figsize=(figwith, 2))
+    i = iter(range(1, cols+1))
 
-    plt.subplot(1, 5, 3)
-    plt.title('Ground Truth')
-    plt.imshow(ground_truth_map)
-    plt.axis('off')
-
-    plt.subplot(1, 5, 4)
-    plt.title('Predicted')
-    plt.imshow(map_pred_categorical)
-    plt.axis('off')
-    if adlo_pred_scaled[0] < 0.5:
-        plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
-    plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
-    if adlo_pred_scaled is not None:
-        centre = map_size / 2
-        error_loc = centre + adlo_pred_scaled[1:3] * map_size
-        angle = adlo_pred_scaled[3] * np.pi
-        angle_loc = error_loc + np.array([np.cos(angle), np.sin(angle)]) * 50
-        plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
-        plt.scatter(centre[0], centre[1], c='k', s=50)
-        plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
-
-    plt.subplot(1, 5, 5)
-    plt.title('Pred Raw')
-    plt.imshow(map_pred_scaled)
-    plt.axis('off')
-    plt.plot([0, map_size[0]-1], [0, map_size[1]-1], c='y', alpha=1-adlo_pred_scaled[0].numpy())
-    plt.plot([0, map_size[0]-1], [map_size[1]-1, 0], c='y', alpha=1-adlo_pred_scaled[0].numpy())
-
-    plt.show()
-
-
-# TODO merge flexibilities into show_prediction
-def flexi_show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred):
-    # apply scaling
-    map_pred_scaled = tf.nn.softmax(map_pred, axis=-1)
-    map_pred_categorical = tf.argmax(map_pred, axis=-1)
-
-    if adlo_pred is not None:
-        accept = tf.nn.sigmoid(adlo_pred[0])
-        delta_x = tf.nn.tanh(adlo_pred[1]) * 0.5
-        delta_y = tf.nn.tanh(adlo_pred[2]) * 0.5
-        delta_angle = tf.nn.tanh(adlo_pred[3])
-        adlo_pred_scaled = tf.stack([accept, delta_x, delta_y, delta_angle], axis=0)
-    else:
-        adlo_pred_scaled = None
-
-    range = np.array([map_window.shape[1], map_window.shape[0]])
-    centre = range / 2
-    if adlo is not None:
-        error_loc = centre + adlo[1:3] * range
-        angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), np.sin(adlo[3] * np.pi)]) * 50
-    else:
-        error_loc = None
-        angle_loc = None
-
-    print(f"adlo:             {adlo}")
-    print(f"adlo-predicted:   {adlo_pred_scaled}")
-    plt.figure(figsize=(15, 2))
-
-    cols = 11
     if map_window is not None:
-        plt.subplot(1, cols, 1)
+        plt.subplot(1, cols, next(i))
         plt.title('Map')
         plt.imshow(map_window)
         plt.axis('off')
-        plt.scatter(centre[0], centre[1], c='k', s=50)
-        if error_loc is not None:
+        if adlo is not None:
+            centre = map_size / 2
+            error_loc = centre + adlo[1:3] * map_size
+            angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), np.sin(adlo[3] * np.pi)]) * 50
             plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
+            plt.scatter(centre[0], centre[1], c='k', s=50)
             plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
+        if adlo is not None and not adlo[0]:
+            # if to be rejected, add cross through map
+            plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
+            plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
 
     if lds_map is not None:
-        plt.subplot(1, cols, 2)
+        plt.subplot(1, cols, next(i))
         plt.title('LDS')
         plt.imshow(lds_map, cmap='gray')
         plt.axis('off')
 
     if ground_truth_map is not None:
-        plt.subplot(1, cols, 3)
+        plt.subplot(1, cols, next(i))
         plt.title('Ground Truth')
         plt.imshow(ground_truth_map)
         plt.axis('off')
 
-        plt.subplot(1, cols, 4)
-        plt.title('0')
-        plt.imshow(ground_truth_map[..., 0], cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(1, cols, 5)
-        plt.title('0')
-        plt.imshow(ground_truth_map[..., 1], cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(1, cols, 6)
-        plt.title('0')
-        plt.imshow(ground_truth_map[..., 2], cmap='gray')
-        plt.axis('off')
+    if ground_truth_map is not None and show_classes == 'all':
+        for channel in range(n_classes):
+            plt.subplot(1, cols, next(i))
+            plt.title(f"Truth:{channel}")
+            plt.imshow(ground_truth_map[..., channel], cmap='gray')
+            plt.axis('off')
 
     if map_pred_categorical is not None:
-        plt.subplot(1, cols, 7)
+        plt.subplot(1, cols, next(i))
         plt.title('Predicted')
         plt.imshow(map_pred_categorical)
         plt.axis('off')
+        if adlo_pred_scaled is not None and adlo_pred_scaled[0] < 0.5:
+            plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
+            plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
+        if adlo_pred_scaled is not None:
+            centre = map_size / 2
+            error_loc = centre + adlo_pred_scaled[1:3] * map_size
+            angle = adlo_pred_scaled[3] * np.pi
+            angle_loc = error_loc + np.array([np.cos(angle), np.sin(angle)]) * 50
+            plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
+            plt.scatter(centre[0], centre[1], c='k', s=50)
+            plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
 
     if map_pred_scaled is not None:
-        plt.subplot(1, cols, 8)
-        plt.title('Pred Raw')
+        plt.subplot(1, cols, next(i))
+        plt.title('Pred Scaled')
         plt.imshow(map_pred_scaled)
         plt.axis('off')
+        plt.plot([0, map_size[0]-1], [0, map_size[1]-1], c='y', alpha=1-adlo_pred_scaled[0].numpy())
+        plt.plot([0, map_size[0]-1], [map_size[1]-1, 0], c='y', alpha=1-adlo_pred_scaled[0].numpy())
 
-        plt.subplot(1, cols, 9)
-        plt.title('0')
-        plt.imshow(map_pred_scaled[..., 0], cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(1, cols, 10)
-        plt.title('1')
-        plt.imshow(map_pred_scaled[..., 1], cmap='gray')
-        plt.axis('off')
-
-        plt.subplot(1, cols, 11)
-        plt.title('2')
-        plt.imshow(map_pred_scaled[..., 2], cmap='gray')
-        plt.axis('off')
+    if map_pred_scaled is not None and show_classes in ('all', 'pred'):
+        for channel in range(n_classes):
+            plt.subplot(1, cols, next(i))
+            plt.title(f"Pred:{channel}")
+            plt.imshow(map_pred_scaled[..., channel], cmap='gray')
+            plt.axis('off')
 
     plt.show()
 
