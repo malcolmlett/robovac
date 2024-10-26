@@ -2,23 +2,10 @@
 
 import lds
 import map_from_lds_train_data
-import slam
-import unet
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
-from PIL import Image
-import io
-import os
-import shutil
-import tarfile
-import cv2
-import requests
-import math
-import ipdb
 import tqdm
-import time
-from timeit import default_timer as timer
 
 # using cm as the default unit for now
 __PIXEL_SIZE__ = 4.471   # cm/px
@@ -597,6 +584,7 @@ def one_hot_encode_floorplan(image):
     one_hot_image = tf.stack([floor_mask, obstruction_mask, unknown_mask], axis=-1)
 
     return tf.cast(one_hot_image, tf.float32)
+
 
 def show_map(semantic_map):
     """
