@@ -405,7 +405,8 @@ def flexi_show_predictions(model, dataset, num=1, **kwargs):
 
 def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs):
     from_logits = kwargs.get('from_logits', True)
-    show_classes = kwargs.get('show_classes', False)  # adds extra columns
+    show_classes = kwargs.get('show_classes', False)  # adds extra columns (TODO)
+    map_size = np.array([map_window.shape[1], map_window.shape[0]])
 
     # apply scaling
     map_pred_scaled = tf.nn.softmax(map_pred, axis=-1) if from_logits else map_pred
@@ -420,11 +421,6 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     else:
         adlo_pred_scaled = adlo_pred
 
-    range = np.array([map_window.shape[1], map_window.shape[0]])
-    centre = range / 2
-    error_loc = centre + adlo[1:3] * range
-    angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), np.sin(adlo[3] * np.pi)]) * 50
-
     print(f"adlo:             {adlo}")
     print(f"adlo-predicted:   {adlo_pred_scaled}")
 
@@ -433,9 +429,17 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     plt.title('Map')
     plt.imshow(map_window)
     plt.axis('off')
-    plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
-    plt.scatter(centre[0], centre[1], c='k', s=50)
-    plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
+    if adlo is not None:
+        centre = map_size / 2
+        error_loc = centre + adlo[1:3] * map_size
+        angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), np.sin(adlo[3] * np.pi)]) * 50
+        plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
+        plt.scatter(centre[0], centre[1], c='k', s=50)
+        plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
+    if not adlo[0]:
+        # if to be rejected, add cross through map
+        plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
+        plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
 
     plt.subplot(1, 5, 2)
     plt.title('LDS')
@@ -451,11 +455,25 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     plt.title('Predicted')
     plt.imshow(map_pred_categorical)
     plt.axis('off')
+    if adlo_pred_scaled[0] < 0.5:
+        plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
+    plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
+    if adlo_pred_scaled is not None:
+        centre = map_size / 2
+        error_loc = centre + adlo_pred_scaled[1:3] * map_size
+        angle = adlo_pred_scaled[3] * np.pi
+        angle_loc = error_loc + np.array([np.cos(angle), np.sin(angle)]) * 50
+        plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
+        plt.scatter(centre[0], centre[1], c='k', s=50)
+        plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
 
     plt.subplot(1, 5, 5)
     plt.title('Pred Raw')
     plt.imshow(map_pred_scaled)
     plt.axis('off')
+    plt.plot([0, map_size[0]-1], [0, map_size[1]-1], c='y', alpha=1-adlo_pred_scaled[0].numpy())
+    plt.plot([0, map_size[0]-1], [map_size[1]-1, 0], c='y', alpha=1-adlo_pred_scaled[0].numpy())
+
     plt.show()
 
 
