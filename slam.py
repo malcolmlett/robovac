@@ -52,18 +52,14 @@
 # Output delta location:
 # - The delta update to the current estimate of the agent location within the source map
 # - delta x,y as percentage of window size, each in range -0.5 .. +0.5
-# - when outputting raw logits, the values need to have the following expression applied: tanh(o) * 0.5
+# - Always outputs in scaled form by applying the following expression: tanh(o) * 0.5
 #
 # Output delta orientation:
 # - The delta update to the current estimate of the agent orientation within the source map
 # - delta angle as a multiple of pi, in range -1.0 .. +1.0
-# - when outputting raw logits, the value needs to have the following expression applied: tanh(o)
+# - Always outputs in scaled form by applying the following expression: tanh(o)
 # - note: under this definition there is no concern over which order the delta location or orientation are applied,
 #   as they are applied to the estimate of the agent's coordinates, not to the maps.
-#
-# TODO
-#  ignore output_logits=True for ADLO location and orientation - always output scaled values
-#  add preprocess() and postprocess() methods (or similar) to streamline conversion
 
 import numpy as np
 import tensorflow as tf
@@ -103,7 +99,8 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
         One of: 'concat' or 'add'.
         How skip connection should be combined with up-scaled input.
       output_logits: bool, default: True
-        Whether to output logits, or softmax otherwise.
+        Whether to output logits where appropriate, or scaled otherwise.
+        The values for delta x/y/orientation are always in scaled form.
 
     Returns:
       model -- tf.keras.Model
@@ -309,13 +306,13 @@ def adlo_block(input, n_units, output_logits):
 
     Generates an output tensor in the form of a vector (per batch row):
     - accept: logit/sigmoid - likelihood that the agent is present within the map, based on the LDS data
-    - delta x: logit/(tanh/2) - percentage of window width to add to current estimated x-location
-    - delta y: logit/(tanh/2) - percentage of window width to add to current estimated y-location
-    - delta angle: logit/tanh - fraction of pi (+/-) to add to current estimated orientation
+    - delta x: -0.5 .. +0.5 - percentage of window width to add to current estimated x-location
+    - delta y: -0.5 .. +0.5 - percentage of window width to add to current estimated y-location
+    - delta angle: -1.0 .. +1.0 - fraction of pi (+/-) to add to current estimated orientation
 
     :param input: Input tensor
     :param n_units: number of units in hidden layers
-    :param output_logits: whether to output logits or scaled
+    :param output_logits: whether to output accept as logits or scaled. delta x/y/angle always scaled
     :return: adlo output (B,4)
     """
 
@@ -331,21 +328,27 @@ def adlo_block(input, n_units, output_logits):
     adlo = Dense(units=n_units, activation='relu')(adlo)
     adlo = Dense(units=n_units, activation='relu')(adlo)
 
-    # Squish down into our output shape
-    final_dense_name = 'adlo_output' if output_logits else None
-    output = Dense(units=4, name=final_dense_name)(adlo)
-
-    # (Optional) Apply activations
-    # (TODO this won't work, it needs to wrap the logic in a named layer)
-    if not output_logits:
-        accept = tf.nn.sigmoid(output[:, 0])  # accept prob in range 0.0 .. 1.0
-        delta_x = tf.nn.tanh(output[:, 2]) * 0.5  # delta x in range -0.5 .. +0.5 (fraction of window size)
-        delta_y = tf.nn.tanh(output[:, 3]) * 0.5  # delta y in range -0.5 .. +0.5 (fraction of window size)
-        delta_angle = tf.nn.tanh(output[:, 1])  # delta angle in range -1.0 .. 1.0 (multiples of pi)
-        output = tf.stack([accept, delta_x, delta_y, delta_angle], axis=1)
-        # TODO set last layer as 'adlo_output'
+    # Squish down into our output shape and apply final activations
+    adlo = Dense(units=4)(adlo)
+    output = ADLOActivation(output_logits=output_logits, name='adlo_output')(adlo)
 
     return output
+
+
+class ADLOActivation(tf.keras.layers.Layer):
+    def __init__(self, output_logits=True, name=None, **kwargs):
+        super(ADLOActivation, self).__init__(name=name, **kwargs)
+        self._output_logits = output_logits
+
+    def call(self, inputs, *args, **kwargs):
+        if self._output_logits:
+            accept = inputs[:, 0]
+        else:
+            accept = tf.nn.sigmoid(inputs[:, 0])  # accept prob in range 0.0 .. 1.0
+        delta_x = tf.nn.tanh(inputs[:, 2]) * 0.5  # delta inputs in range -0.5 .. +0.5 (fraction of window size)
+        delta_y = tf.nn.tanh(inputs[:, 3]) * 0.5  # delta y in range -0.5 .. +0.5 (fraction of window size)
+        delta_angle = tf.nn.tanh(inputs[:, 1])    # delta angle in range -1.0 .. 1.0 (multiples of pi)
+        return tf.stack([accept, delta_x, delta_y, delta_angle], axis=1)
 
 
 class ADLOLoss(tf.keras.losses.Loss):
@@ -355,7 +358,7 @@ class ADLOLoss(tf.keras.losses.Loss):
 
     Assumes:
         y_true: (B,4), scaled
-        y_pred: (B,4), logits or scaled
+        y_pred: (B,4), accept part logit or scaled, and DLO parts scaled always
     """
     def __init__(self, name="adlo_loss", from_logits=True):
         super(ADLOLoss, self).__init__(name=name)
@@ -371,13 +374,7 @@ class ADLOLoss(tf.keras.losses.Loss):
 
         # log-cosh loss for delta x, y, orientation
         dlo_true = y_true[:, 1:4]
-        if self._from_logits:
-            delta_x = tf.math.tanh(y_pred[:, 1]) * 0.5  # -0.5 .. +0.5
-            delta_y = tf.math.tanh(y_pred[:, 2]) * 0.5  # -0.5 .. +0.5
-            delta_angle = tf.math.tanh(y_pred[:, 3])    # -1.0 .. +1.0
-            dlo_pred = tf.stack([delta_x, delta_y, delta_angle], axis=1)
-        else:
-            dlo_pred = y_pred[:, 1:4]
+        dlo_pred = y_pred[:, 1:4]
         dlo_losses = tf.reduce_mean(tf.math.log(tf.cosh(dlo_pred - dlo_true)))
 
         return accept_losses + dlo_losses
@@ -393,7 +390,7 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
 
     Assumes:
         y_true: (B,4), scaled
-        y_pred: (B,4), logits
+        y_pred: (B,4), logits or scaled
     Returns:
         metric scalar 0.0 .. 1.0
     """
@@ -430,29 +427,23 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
 class LocationError(tf.keras.metrics.Metric):
     """
     Metric against the ADLO 'delta location' output.
-    By default, assumes output_logits=True in model.
-
     Computes the RMS error on the 'delta location' coordinate.
 
     Assumes:
         y_true: (B,4), scaled
-        y_pred: (B,4), logits or scaled
+        y_pred: (B,4), with DL parts scaled (always)
     Returns:
         metric scalar 0.0 .. ~0.5
     """
-    def __init__(self, name="loc_error", from_logits=True, **kwargs):
+    def __init__(self, name="loc_error", **kwargs):
         super(LocationError, self).__init__(name=name, **kwargs)
         self.total_error = self.add_weight(name="total_error", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
-        self._from_logits=from_logits
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
-        loc_true = y_true[:, 1:3]
-        if self._from_logits:
-            loc_pred = tf.math.tanh(y_pred[:, 1:3]) * 0.5  # -0.5 .. +0.5
-        else:
-            loc_pred = y_pred[:, 1:3]  # -0.5 .. +0.5
+        loc_true = y_true[:, 1:3]  # -0.5 .. +0.5
+        loc_pred = y_pred[:, 1:3]  # -0.5 .. +0.5
         losses = tf.math.sqrt(tf.keras.losses.MSE(loc_true, loc_pred))
 
         if sample_weight is not None:
@@ -473,29 +464,24 @@ class LocationError(tf.keras.metrics.Metric):
 class OrientationError(tf.keras.metrics.Metric):
     """
     Metric against the ADLO 'delta orientation' output.
-    By default, assumes output_logits=True in model.
 
     Computes the RMS error on the 'delta orientation' value.
 
     Assumes:
         y_true: (B,4), scaled
-        y_pred: (B,4), logits or scaled
+        y_pred: (B,4), with DO part scaled (always)
     Returns:
         metric scalar 0.0 .. ~1.0
     """
-    def __init__(self, name="orientation_error", from_logits=True, **kwargs):
+    def __init__(self, name="orientation_error", **kwargs):
         super(OrientationError, self).__init__(name=name, **kwargs)
         self.total_error = self.add_weight(name="total_error", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
-        self._from_logits=from_logits
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
-        angle_true = y_true[:, 3]
-        if self._from_logits:
-            angle_pred = tf.math.tanh(y_pred[:, 3])  # -1.0 .. +1.0
-        else:
-            angle_pred = y_pred[:, 3]  # -1.0 .. +1.0
+        angle_true = y_true[:, 3]  # -1.0 .. +1.0
+        angle_pred = y_pred[:, 3]  # -1.0 .. +1.0
         losses = tf.math.sqrt(tf.keras.losses.MSE(angle_true, angle_pred))
 
         if sample_weight is not None:
