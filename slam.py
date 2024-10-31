@@ -60,6 +60,10 @@
 # - when outputting raw logits, the value needs to have the following expression applied: tanh(o)
 # - note: under this definition there is no concern over which order the delta location or orientation are applied,
 #   as they are applied to the estimate of the agent's coordinates, not to the maps.
+#
+# TODO
+#  ignore output_logits=True for ADLO location and orientation - always output scaled values
+#  add preprocess() and postprocess() methods (or similar) to streamline conversion
 
 import numpy as np
 import tensorflow as tf
@@ -342,3 +346,84 @@ def adlo_block(input, n_units, output_logits):
         # TODO set last layer as 'adlo_output'
 
     return output
+
+
+def adlo_loss(y_true, y_pred):
+    """
+    Loss function against the ADLO output.
+    Assumes output_logits=True in model.
+
+    :param y_true: (B,4), scaled
+    :param y_pred: (B,4), logits
+    :return: loss scalar
+    """
+    y_true = tf.cast(y_true, tf.float32)
+
+    # binary cross-entropy loss for accept
+    accept_true = y_true[:, 0]
+    accept_pred = y_pred[:, 0]
+    accept_losses = tf.keras.losses.binary_crossentropy(accept_true, accept_pred, from_logits=True)
+
+    # log-cosh loss for delta x, y, orientation
+    dlo_true = y_true[:, 1:4]
+    delta_x = tf.math.tanh(y_pred[:, 1]) * 0.5  # -0.5 .. +0.5
+    delta_y = tf.math.tanh(y_pred[:, 2]) * 0.5  # -0.5 .. +0.5
+    delta_angle = tf.math.tanh(y_pred[:, 3])    # -1.0 .. +1.0
+    dlo_pred = tf.stack([delta_x, delta_y, delta_angle], axis=1)
+    dlo_losses = tf.reduce_mean(tf.math.log(tf.cosh(dlo_pred - dlo_true)))
+
+    return accept_losses + dlo_losses
+
+
+def accept_accuracy(y_true, y_pred):
+    """
+    Metric function against the ADLO 'accept' output.
+    Assumes output_logits=True in model.
+
+    Computes the percentage of correct 'accept' booleans after scaling
+    and discretizing.
+
+    :param y_true: (B,4), scaled
+    :param y_pred: (B,4), logits
+    :return: metric scalar 0.0 .. 1.0
+    """
+    accept_true = tf.cast(y_true[:, 0], tf.float32)
+    accept_pred = tf.cast(tf.round(tf.nn.sigmoid(y_pred[:, 0])), tf.float32)
+    matches = tf.equal(accept_true, accept_pred)
+    return tf.reduce_mean(tf.cast(matches, tf.float32))
+
+
+def loc_error(y_true, y_pred):
+    """
+    Metric function against the ADLO 'delta location' output.
+    Assumes output_logits=True in model.
+
+    Computes the RMS error on the 'delta location' coordinate.
+
+    :param y_true: (B,4), scaled
+    :param y_pred: (B,4), logits
+    :return: metric scalar 0.0 .. ~0.5
+    """
+    y_true = tf.cast(y_true, tf.float32)
+    loc_true = y_true[:, 1:3]
+    loc_pred = tf.math.tanh(y_pred[:, 1:3]) * 0.5  # -0.5 .. +0.5
+    losses = tf.math.sqrt(tf.keras.losses.MSE(loc_true, loc_pred))
+    return tf.reduce_mean(losses)
+
+
+def orientation_error(y_true, y_pred):
+    """
+    Metric function against the ADLO 'delta orientation' output.
+    Assumes output_logits=True in model.
+
+    Computes the RMS error on the 'delta orientation' value.
+
+    :param y_true: (B,4), scaled
+    :param y_pred: (B,4), logits
+    :return: metric scalar 0.0 .. ~1.0
+    """
+    y_true = tf.cast(y_true, tf.float32)
+    angle_true = y_true[:, 3]
+    angle_pred = tf.math.tanh(y_pred[:, 3])  # -1.0 .. +1.0
+    losses = tf.math.sqrt(tf.keras.losses.MSE(angle_true, angle_pred))
+    return tf.reduce_mean(losses)
