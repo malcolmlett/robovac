@@ -418,14 +418,11 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     # apply scaling
     map_pred_scaled = tf.nn.softmax(map_pred, axis=-1) if from_logits else map_pred
     map_pred_categorical = tf.argmax(map_pred_scaled, axis=-1)
-    if from_logits and adlo_pred is not None:
-        accept = tf.nn.sigmoid(adlo_pred[0])
-        delta_x = tf.nn.tanh(adlo_pred[1]) * 0.5
-        delta_y = tf.nn.tanh(adlo_pred[2]) * 0.5
-        delta_angle = tf.nn.tanh(adlo_pred[3])
-        adlo_pred_scaled = tf.stack([accept, delta_x, delta_y, delta_angle], axis=0)
+    if adlo_pred is not None:
+        accept = tf.nn.sigmoid(adlo_pred[0]) if from_logits else adlo_pred[0]
+        adlo_pred_scaled = tf.stack([accept, adlo_pred[1], adlo_pred[2], adlo_pred[3]], axis=0)
     else:
-        adlo_pred_scaled = adlo_pred
+        adlo_pred_scaled = None
 
     # Log details that are not so great in visual form
     print(f"adlo:             {adlo}")
