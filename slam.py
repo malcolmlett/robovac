@@ -348,82 +348,166 @@ def adlo_block(input, n_units, output_logits):
     return output
 
 
-def adlo_loss(y_true, y_pred):
+class ADLOLoss(tf.keras.losses.loss):
     """
-    Loss function against the ADLO output.
-    Assumes output_logits=True in model.
+    Custom loss for ADLO output.
+    By default, assumes output_logits=True in model.
 
-    :param y_true: (B,4), scaled
-    :param y_pred: (B,4), logits
-    :return: loss scalar
+    Assumes:
+        y_true: (B,4), scaled
+        y_pred: (B,4), logits or scaled
     """
-    y_true = tf.cast(y_true, tf.float32)
+    def __init__(self, name="adlo_loss", from_logits=True):
+        super(ADLOLoss, self).__init__(name=name)
+        self._from_logits = from_logits
 
-    # binary cross-entropy loss for accept
-    accept_true = y_true[:, 0]
-    accept_pred = y_pred[:, 0]
-    accept_losses = tf.keras.losses.binary_crossentropy(accept_true, accept_pred, from_logits=True)
+    def call(self, y_true, y_pred):
+        y_true = tf.cast(y_true, tf.float32)
 
-    # log-cosh loss for delta x, y, orientation
-    dlo_true = y_true[:, 1:4]
-    delta_x = tf.math.tanh(y_pred[:, 1]) * 0.5  # -0.5 .. +0.5
-    delta_y = tf.math.tanh(y_pred[:, 2]) * 0.5  # -0.5 .. +0.5
-    delta_angle = tf.math.tanh(y_pred[:, 3])    # -1.0 .. +1.0
-    dlo_pred = tf.stack([delta_x, delta_y, delta_angle], axis=1)
-    dlo_losses = tf.reduce_mean(tf.math.log(tf.cosh(dlo_pred - dlo_true)))
+        # binary cross-entropy loss for accept
+        accept_true = y_true[:, 0]
+        accept_pred = y_pred[:, 0]
+        accept_losses = tf.keras.losses.binary_crossentropy(accept_true, accept_pred, from_logits=self._from_logits)
 
-    return accept_losses + dlo_losses
+        # log-cosh loss for delta x, y, orientation
+        dlo_true = y_true[:, 1:4]
+        if self._from_logits:
+            delta_x = tf.math.tanh(y_pred[:, 1]) * 0.5  # -0.5 .. +0.5
+            delta_y = tf.math.tanh(y_pred[:, 2]) * 0.5  # -0.5 .. +0.5
+            delta_angle = tf.math.tanh(y_pred[:, 3])    # -1.0 .. +1.0
+            dlo_pred = tf.stack([delta_x, delta_y, delta_angle], axis=1)
+        else:
+            dlo_pred = y_pred[:, 1:4]
+        dlo_losses = tf.reduce_mean(tf.math.log(tf.cosh(dlo_pred - dlo_true)))
+
+        return accept_losses + dlo_losses
 
 
-def accept_accuracy(y_true, y_pred):
+class AcceptAccuracy(tf.keras.metrics.Metric):
     """
     Metric function against the ADLO 'accept' output.
-    Assumes output_logits=True in model.
+    By default, assumes output_logits=True in model.
 
     Computes the percentage of correct 'accept' booleans after scaling
     and discretizing.
 
-    :param y_true: (B,4), scaled
-    :param y_pred: (B,4), logits
-    :return: metric scalar 0.0 .. 1.0
+    Assumes:
+        y_true: (B,4), scaled
+        y_pred: (B,4), logits
+    Returns:
+        metric scalar 0.0 .. 1.0
     """
-    accept_true = tf.cast(y_true[:, 0], tf.float32)
-    accept_pred = tf.cast(tf.round(tf.nn.sigmoid(y_pred[:, 0])), tf.float32)
-    matches = tf.equal(accept_true, accept_pred)
-    return tf.reduce_mean(tf.cast(matches, tf.float32))
+    def __init__(self, name="accept_accuracy", from_logits=True, **kwargs):
+        super(AcceptAccuracy, self).__init__(name=name, **kwargs)
+        self.total = self.add_weight(name="total", initializer="zeros")
+        self.correct = self.add_weight(name="correct", initializer="zeros")
+        self._from_logits = from_logits
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        accept_true = tf.cast(y_true[:, 0], tf.float32)
+        if self._from_logits:
+            accept_pred = tf.cast(tf.round(tf.nn.sigmoid(y_pred[:, 0])), tf.float32)
+        else:
+            accept_pred = tf.cast(tf.round(y_pred[:, 0]), tf.float32)
+        matches = tf.equal(accept_true, accept_pred)
+        matches = tf.cast(matches, self.dtype)
+
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, self.dtype)
+            matches *= sample_weight
+
+        self.correct.assign_add(tf.reduce_sum(matches))
+        self.total.assign_add(tf.cast(y_true.shape[0], self.dtype))
+
+    def result(self):
+        return self.correct / self.total
+
+    def reset_states(self):
+        self.total.assign(0.0)
+        self.correct.assign(0.0)
 
 
-def loc_error(y_true, y_pred):
+class LocError(tf.keras.metrics.Metric):
     """
-    Metric function against the ADLO 'delta location' output.
-    Assumes output_logits=True in model.
+    Metric against the ADLO 'delta location' output.
+    By default, assumes output_logits=True in model.
 
     Computes the RMS error on the 'delta location' coordinate.
 
-    :param y_true: (B,4), scaled
-    :param y_pred: (B,4), logits
-    :return: metric scalar 0.0 .. ~0.5
+    Assumes:
+        y_true: (B,4), scaled
+        y_pred: (B,4), logits or scaled
+    Returns:
+        metric scalar 0.0 .. ~0.5
     """
-    y_true = tf.cast(y_true, tf.float32)
-    loc_true = y_true[:, 1:3]
-    loc_pred = tf.math.tanh(y_pred[:, 1:3]) * 0.5  # -0.5 .. +0.5
-    losses = tf.math.sqrt(tf.keras.losses.MSE(loc_true, loc_pred))
-    return tf.reduce_mean(losses)
+    def __init__(self, name="loc_error", from_logits=True, **kwargs):
+        super(LocError, self).__init__(name=name, **kwargs)
+        self.total_error = self.add_weight(name="total_error", initializer="zeros")
+        self.count = self.add_weight(name="count", initializer="zeros")
+        self._from_logits=from_logits
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = tf.cast(y_true, tf.float32)
+        loc_true = y_true[:, 1:3]
+        if self._from_logits:
+            loc_pred = tf.math.tanh(y_pred[:, 1:3]) * 0.5  # -0.5 .. +0.5
+        else:
+            loc_pred = y_pred[:, 1:3]  # -0.5 .. +0.5
+        losses = tf.math.sqrt(tf.keras.losses.MSE(loc_true, loc_pred))
+
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, self.dtype)
+            losses *= sample_weight
+
+        self.total_error.assign_add(tf.reduce_sum(losses))
+        self.count.assign_add(tf.cast(y_true.shape[0], self.dtype))
+
+    def result(self):
+        return self.total_error / self.count
+
+    def reset_states(self):
+        self.total_error.assign(0.0)
+        self.count.assign(0.0)
 
 
-def orientation_error(y_true, y_pred):
+class OrientationError(tf.keras.metrics.Metric):
     """
-    Metric function against the ADLO 'delta orientation' output.
-    Assumes output_logits=True in model.
+    Metric against the ADLO 'delta orientation' output.
+    By default, assumes output_logits=True in model.
 
     Computes the RMS error on the 'delta orientation' value.
 
-    :param y_true: (B,4), scaled
-    :param y_pred: (B,4), logits
-    :return: metric scalar 0.0 .. ~1.0
+    Assumes:
+        y_true: (B,4), scaled
+        y_pred: (B,4), logits or scaled
+    Returns:
+        metric scalar 0.0 .. ~1.0
     """
-    y_true = tf.cast(y_true, tf.float32)
-    angle_true = y_true[:, 3]
-    angle_pred = tf.math.tanh(y_pred[:, 3])  # -1.0 .. +1.0
-    losses = tf.math.sqrt(tf.keras.losses.MSE(angle_true, angle_pred))
-    return tf.reduce_mean(losses)
+    def __init__(self, name="orientation_error", from_logits=True, **kwargs):
+        super(OrientationError, self).__init__(name=name, **kwargs)
+        self.total_error = self.add_weight(name="total_error", initializer="zeros")
+        self.count = self.add_weight(name="count", initializer="zeros")
+        self._from_logits=from_logits
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = tf.cast(y_true, tf.float32)
+        angle_true = y_true[:, 3]
+        if self._from_logits:
+            angle_pred = tf.math.tanh(y_pred[:, 3])  # -1.0 .. +1.0
+        else:
+            angle_pred = y_pred[:, 3]  # -1.0 .. +1.0
+        losses = tf.math.sqrt(tf.keras.losses.MSE(angle_true, angle_pred))
+
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, self.dtype)
+            losses *= sample_weight
+
+        self.total_error.assign_add(tf.reduce_sum(losses))
+        self.count.assign_add(tf.cast(y_true.shape[0], self.dtype))
+
+    def result(self):
+        return self.total_error / self.count
+
+    def reset_states(self):
+        self.total_error.assign(0.0)
+        self.count.assign(0.0)
