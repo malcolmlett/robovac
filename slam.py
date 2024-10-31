@@ -360,7 +360,7 @@ class ADLOLoss(tf.keras.losses.Loss):
         y_true: (B,4), scaled
         y_pred: (B,4), accept part logit or scaled, and DLO parts scaled always
     """
-    def __init__(self, name="adlo_loss", from_logits=True):
+    def __init__(self, name="adlo_loss", from_logits=True, reduction=None):
         super(ADLOLoss, self).__init__(name=name)
         self._from_logits = from_logits
 
@@ -379,6 +379,12 @@ class ADLOLoss(tf.keras.losses.Loss):
 
         return accept_losses + dlo_losses
 
+    def get_config(self):
+        config = super(ADLOLoss, self).get_config()
+        config.update({
+            "from_logits": self._from_logits
+        })
+        return config
 
 class AcceptAccuracy(tf.keras.metrics.Metric):
     """
