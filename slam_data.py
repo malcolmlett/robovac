@@ -7,15 +7,42 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import tqdm
 
-# using cm as the default unit for now
-__PIXEL_SIZE__ = 4.471   # cm/px
-__MAX_DISTANCE__ = 350   # 3.5m in cm
+
+def one_hot_encode_floorplan(image):
+    """
+    Converts an RGB floorplan image into a one-hot encoded tensor of the same form
+    used as input and output maps in the SLAM model.
+
+    Ordered channels are:
+    - floor (white in the RGB image)
+    - obstruction (black in the RGB image)
+    - unknown (grey in the RGB image)
+
+    Args:
+      image: (H,W,3) RGB floorplan image
+
+    Returns:
+      (H,W,C) one-hot encoded tensor of the floorplan image
+    """
+    # sanity check
+    if not np.array_equal(np.unique(image), np.array([0, 192, 255])):
+      raise ValueError(f"Encountered unexpected values in image, expected [0, 192, 255], got: {np.unique(image)}")
+
+    # get each channel
+    floor_mask = tf.reduce_all(tf.equal(image, [255, 255, 255]), axis=-1)
+    obstruction_mask = tf.reduce_all(tf.equal(image, [0, 0, 0]), axis=-1)
+    unknown_mask = tf.reduce_all(tf.equal(image, [192, 192, 192]), axis=-1)
+
+    # Stack the masks along the last dimension to create a one-hot encoded tensor
+    one_hot_image = tf.stack([floor_mask, obstruction_mask, unknown_mask], axis=-1)
+
+    return tf.cast(one_hot_image, tf.float32)
 
 
 def generate_training_data(semantic_map, num_samples, **kwargs):
     tot_sample_types = 4
-    pixel_size = kwargs.get('pixel_size', __PIXEL_SIZE__)
-    max_distance = kwargs.get('max_distance', __MAX_DISTANCE__)
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
     sample_types = np.array(kwargs.get('sample_types', range(tot_sample_types)))
     print(f"Generating {num_samples} samples of training data")
     print(f"Pixel size: {pixel_size}")
@@ -35,6 +62,8 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
     adlos = []
     attempts = 0
     for _ in tqdm.tqdm(range(num_samples)):
+        # TODO only pick locations within the 'floor' region of the map
+
         # keep trying until we generate one sample
         while True:
             attempts += 1
@@ -48,7 +77,7 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
             if sample_type == 0:
                 # New map, unknown location and orientation, loc/angle error disregarded
                 map_window, lds_map, ground_truth_map, centre_offset = generate_training_data_sample(
-                    semantic_map, location, angle, False, None, None, pixel_size=pixel_size, max_distance=max_distance)
+                    semantic_map, location, angle, False, None, None, **kwargs)
 
             elif sample_type == 1:
                 # Known map, known location/angle with some small uniform estimation error
@@ -58,8 +87,7 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
                 loc_error = np.clip(loc_error, -window_range / 2, +window_range / 2)
                 angle_error = np.clip(angle_error, -np.pi, +np.pi)
                 map_window, lds_map, ground_truth_map, centre_offset = generate_training_data_sample(
-                    semantic_map, location, angle, True, loc_error, angle_error, pixel_size=pixel_size,
-                    max_distance=max_distance)
+                    semantic_map, location, angle, True, loc_error, angle_error, **kwargs)
 
             elif sample_type == 2:
                 # Known map, location unknown and searching, with LDS data partially on this map window.
@@ -69,8 +97,7 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
                                               +window_range / 2)  # uniform either side of zero, anywhere within window
                 angle_error = np.random.uniform(-np.pi, np.pi)  # uniform anywhere within 360-degree range
                 map_window, lds_map, ground_truth_map, centre_offset = generate_training_data_sample(
-                    semantic_map, location, angle, True, loc_error, angle_error, pixel_size=pixel_size,
-                    max_distance=max_distance)
+                    semantic_map, location, angle, True, loc_error, angle_error, **kwargs)
 
             elif sample_type == 3:
                 # Known map, location unknown and searching, with LDS not on this map window.
@@ -84,10 +111,9 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
                 loc_error = lds_loc - location
                 angle_error = lds_angle - angle
                 map_window, _, _, centre_offset = generate_training_data_sample(
-                    semantic_map, location, angle, True, loc_error, angle_error, pixel_size=pixel_size,
-                    max_distance=max_distance)
+                    semantic_map, location, angle, True, loc_error, angle_error, **kwargs)
                 _, lds_map, ground_truth_map, _ = generate_training_data_sample(
-                    semantic_map, lds_loc, lds_angle, False, None, None, pixel_size=pixel_size, max_distance=max_distance)
+                    semantic_map, lds_loc, lds_angle, False, None, None, **kwargs)
 
                 # for expected NN outputs
                 # (error should be ignored by loss function, but if we do let it train on these values then we'd
@@ -123,7 +149,8 @@ def generate_training_data(semantic_map, num_samples, **kwargs):
     ))
 
 
-def generate_training_data_sample(semantic_map, location, orientation, map_known, location_error, orientation_error, **kwargs):
+def generate_training_data_sample(semantic_map, location, orientation, map_known, location_error, orientation_error,
+                                  **kwargs):
     """
     Simulates information that the agent might have and should infer given the agent's true location/orientation
     and the error in its estimate of that location/orientation.
@@ -165,8 +192,8 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
         of the agent is relative to the map centre (pixel units, with sub-pixel resolution)
     """
     # config
-    max_distance = kwargs.get('max_distance', 100)
-    pixel_size = kwargs.get('pixel_size', 1.0)
+    max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
     unknown_value = kwargs.get('unknown_value', np.array([0, 0, 1], dtype=semantic_map.dtype))
     location_error = np.array(location_error) if location_error is not None else np.array([0.0, 0.0])
     orientation_error = orientation_error if orientation_error is not None else 0.0
@@ -175,14 +202,12 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
 
     # take LDS sample
     lds_orientation = (orientation + orientation_error) if np.isfinite(orientation_error) else orientation
-    ranges = lds.lds_sample(
-        semantic_map[:, :, 1], location + location_error, lds_orientation, max_distance=max_distance,
-        pixel_size=pixel_size)
+    ranges = lds.lds_sample(semantic_map[:, :, 1], location + location_error, lds_orientation, **kwargs)
     if (np.nanmax(ranges) < pixel_size) or ranges[~np.isnan(ranges)].size == 0:
         return None, None, None, None
 
     # generate input map
-    # (aligned to map pixels, and zero rotation)
+    # (aligned to map pixels and zero rotation)
     location_fpx = location / pixel_size  # sub-pixel resolution ("float pixels")
     location_px = np.round(location_fpx).astype(int)
     location_alignment_offset_fpx = location_fpx - location_px  # true centre relative to window centre
@@ -208,7 +233,7 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
     #  and is 0.0 if completely unknown)
     believed_orientation = orientation if map_known and np.isfinite(orientation_error) else 0.0
     lds_map = lds.lds_to_occupancy_map(
-        ranges, start_angle=believed_orientation, size_px=window_size_px, centre_px=location_alignment_offset_fpx,
+        ranges, angle=believed_orientation, size_px=window_size_px, centre_px=location_alignment_offset_fpx,
         pixel_size=pixel_size)
 
     return map_window, lds_map, ground_truth_map, location_alignment_offset_fpx
@@ -282,6 +307,11 @@ def validate_dataset(dataset):
     print(f"Dataset tests passed ({count} entries verified)")
 
 
+def show_dataset(dataset, num=5):
+    for (map_window, lds_map), (ground_truth_map, adlo) in dataset.take(num):
+        show_data_sample(map_window, lds_map, ground_truth_map, adlo)
+
+
 def show_data_sample(map_window, lds_map, ground_truth_map, adlo):
     print(f"map_window:       {map_window.shape}")
     print(f"lds_map:          {lds_map.shape}")
@@ -312,11 +342,6 @@ def show_data_sample(map_window, lds_map, ground_truth_map, adlo):
     plt.imshow(ground_truth_map, cmap='gray')
     plt.axis('off')
     plt.show()
-
-
-def show_dataset(dataset, num=5):
-    for (map_window, lds_map), (ground_truth_map, adlo) in dataset.take(num):
-        show_data_sample(map_window, lds_map, ground_truth_map, adlo)
 
 
 def show_predictions(model, dataset, num=5, **kwargs):
@@ -512,37 +537,6 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
             plt.axis('off')
 
     plt.show()
-
-
-def one_hot_encode_floorplan(image):
-    """
-    Converts an RGB floorplan image into a one-hot encoded tensor of the same form
-    used as input and output maps in the SLAM model.
-
-    Ordered channels are:
-    - floor (white in the RGB image)
-    - obstruction (black in the RGB image)
-    - unknown (grey in the RGB image)
-
-    Args:
-      image: (H,W,3) RGB floorplan image
-
-    Returns:
-      (H,W,C) one-hot encoded tensor of the floorplan image
-    """
-    # sanity check
-    if not np.array_equal(np.unique(image), np.array([0, 192, 255])):
-      raise ValueError(f"Encountered unexpected values in image, expected [0, 192, 255], got: {np.unique(image)}")
-
-    # get each channel
-    floor_mask = tf.reduce_all(tf.equal(image, [255, 255, 255]), axis=-1)
-    obstruction_mask = tf.reduce_all(tf.equal(image, [0, 0, 0]), axis=-1)
-    unknown_mask = tf.reduce_all(tf.equal(image, [192, 192, 192]), axis=-1)
-
-    # Stack the masks along the last dimension to create a one-hot encoded tensor
-    one_hot_image = tf.stack([floor_mask, obstruction_mask, unknown_mask], axis=-1)
-
-    return tf.cast(one_hot_image, tf.float32)
 
 
 def show_map(semantic_map):

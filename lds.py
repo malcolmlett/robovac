@@ -45,10 +45,10 @@ import numpy as np
 __PIXEL_SIZE__ = 44.71   # mm/px
 __MIN_DISTANCE__ = 120    # 120mm
 __MAX_DISTANCE__ = 3500   # 3.5m in mm
-__NOISE_RANGES__ = np.array([
+__NOISE_RANGES__ = [
     [0, 500, 15/1.96, 'abs'],
     [500, +np.inf, 0.05/1.96, 'factor']
-])
+]
 
 
 # Algorithm:
@@ -72,7 +72,7 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     LDS data represents a sampling across a 360 degree counterclockwise spread, starting on the requested angle.
 
     Coordinates are specified in an "output unit", with a conversion from pixels to the output
-    unit defined by `pixel_size` (default: 1.0).
+    unit defined by `pixel_size`.
 
     Experiments have found that a step_size that leads to about 3 steps total is optimum, and by default
     this function uses that rule.
@@ -102,8 +102,8 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
       max_distance: float, default: __MAX_DISTANCE__
         Maximum distance that an LDS can observe (unit: output units)
         Anything further than this is omitted from the results.
-      noise_ranges: (N,3) of float, default: __NOISE_RANGES
-        List or array of (3,) = [start (inclusive), end (exclusive), std.dev, mode].
+      noise_ranges: List of list (4,), default: __NOISE_RANGES
+        Each entry has: [start (inclusive), end (exclusive), std.dev, mode].
         The amount of gaussian noise to add to the results.
         Mode is one of: 'abs', 'factor'
       nothing_value: float, default: 0.0.
@@ -129,8 +129,8 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     grid_size_px = math.floor(step_size / pixel_size)  # conservatively prefer regions slightly closer together
     grid_radius_px = math.ceil(step_size / pixel_size)  # conservatively prefer regions slightly larger
     grid_size = grid_size_px * pixel_size  # in output unit, used for lookups later on
-    grid = construct_nn_grid(occupancy_map, grid_size_px, grid_radius=grid_radius_px, nothing_value=nothing_value,
-                             pixel_size=pixel_size)
+    grid = _construct_nn_grid(occupancy_map, grid_size_px, grid_radius=grid_radius_px, nothing_value=nothing_value,
+                              pixel_size=pixel_size)
     grid_counts = np.array([[grid[r, c]['count'] for c in range(grid.shape[1])] for r in range(grid.shape[0])])
 
     # initialise traces (uses output units)
@@ -161,7 +161,7 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
 
         # process each accepted block
         for idx in np.where(mask)[0]:
-            intersection, distance, pixel_coord, pixel_value = find_collision(
+            intersection, distance, pixel_coord, pixel_value = _find_collision(
                 centre, steps[idx], grid[grid_rows[idx], grid_cols[idx]], pixel_size=pixel_size)
             if not np.isnan(distance):
                 ranges[idx] = distance
@@ -170,8 +170,6 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     # - ranges < min distance are dropped (unseen)
     # - ranges > max distance are dropped (unseen)
     # - ranges within a given accuracy band have gaussian noise added
-    ranges[ranges < min_distance] = np.nan
-    ranges[ranges > max_distance] = np.nan
     if noise_ranges is not None:
         for start, end, stddev, mode in noise_ranges:
             mask = (ranges >= start) & (end is None or ranges < end)
@@ -179,15 +177,72 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
             if mode == 'abs':
                 noise *= stddev
             elif mode == 'factor':
-                noise *= ranges
+                noise *= stddev * ranges
             else:
                 raise ValueError(f"Unknown noise range mode: {mode}")
             ranges[mask] += noise[mask]
+    ranges[ranges < min_distance] = np.nan
+    ranges[ranges > max_distance] = np.nan
 
     return ranges
 
 
-def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
+def lds_to_occupancy_map(ranges, angle, **kwargs):
+    """
+    Converts LDS range data to a binary occupancy map.
+    :param ranges: array (n,) - range values may contain nans, which are dropped
+    :param angle: angle of first range (radians)
+    :param kwargs
+
+    Keyword args:
+      pixel_size: float, default: __PIXEL_SIZE__
+      size_px: int/float or tuple (h, w), default: ceil(__MAX_DISTANCE__/__PIXEL_SIZE__)*2+1
+        Size of output map in pixels.
+        Warning: currently causes errors if there's any ranges that don't fit within the window.
+      centre_px: tuple, float (x,y), relative to map centre (unit: pixels)
+        Usually centres LDS data exactly on centre of generated map (to sub-pixel resolution).
+        Use this to shift by some amount.
+      encoding: one of 'nn', 'antialiased', 'nn+offset':
+        nn: nearest neighbour
+        (TODO) antialised: blurs into adjacent pixels for implied sub-pixel resolution
+        (TODO) nn+offset: picks single NN pixel, but on second and third channels adds
+          x and y offset (-0.5 .. +0.5) in sub-pixel resolution
+
+    :return: array (h,w) of floats in range [0,1]
+    """
+
+    # config
+    pixel_size = kwargs.get('pixel_size', __PIXEL_SIZE__)
+    centre_px = kwargs.get('centre_px', (0.0, 0.0))
+    size_px = kwargs.get('size_px', np.ceil(__MAX_DISTANCE__ / __PIXEL_SIZE__).astype(int) * 2 + 1)
+    size_px = np.array(size_px) if np.size(size_px) == 2 else np.array([size_px, size_px])
+
+    map_centre_fpx = np.array((size_px-1) / 2) + np.array(centre_px)
+
+    lds_points = lds_to_2d(ranges, (0, 0), angle)
+    lds_points_px = np.round(lds_points/pixel_size + map_centre_fpx).astype(int)
+    lds_map = np.full(size_px, 0.0, dtype=np.float32)
+    lds_map[lds_points_px[:, 1], lds_points_px[:, 0]] = 1.0
+
+    return lds_map
+
+
+def lds_to_2d(ranges, centre, angle):
+    """
+    Converts LDS range data to Euclidean coordinates.
+    Applies a unit-less conversion, retaining the same unit in the 2D coords as used by the range values.
+    :param ranges: array (n,) - range values may contain nans, which are dropped
+    :param centre: array (2,) = [x,y] - centre point for ranges
+    :param angle: angle of first range (radians)
+    :return: array (n,2) of [x,y] coords (without nans)
+    """
+    angles = np.linspace(0, np.pi * 2, num=ranges.shape[0], endpoint=False) + angle
+    steps = np.column_stack((np.cos(angles), -np.sin(angles)))
+    points = steps * ranges.reshape(-1, 1) + centre
+    return points[~np.isnan(ranges)]
+
+
+def _construct_nn_grid(occupancy_map, grid_size, grid_radius=None, **kwargs):
     """
     Constructs a lookup array populated with lists of nearest-neighbour pixels
     located within circular regions around a grid of centres.
@@ -196,7 +251,7 @@ def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
     Supply a pixel_size parameter to convert to any other unit.
 
     Parameters:
-      semantic_map: array(r,c) of bool or float
+      occupancy_map: array(r,c) of bool or float
         An image that represents a 2D world of pixel-sized objects having a single value each to classify different
         kinds of objects.
       grid_size: float
@@ -227,10 +282,10 @@ def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
     pixel_size = kwargs.get('pixel_size', 1.0)
 
     # setup
-    max_x = semantic_map.shape[1] - 1
-    max_y = semantic_map.shape[0] - 1
-    rows = math.ceil(semantic_map.shape[0] / grid_size) + 1  # so that ceil(len/size) is last index
-    cols = math.ceil(semantic_map.shape[1] / grid_size) + 1  # so that ceil(len/size) is last index
+    max_x = occupancy_map.shape[1] - 1
+    max_y = occupancy_map.shape[0] - 1
+    rows = math.ceil(occupancy_map.shape[0] / grid_size) + 1  # so that ceil(len/size) is last index
+    cols = math.ceil(occupancy_map.shape[1] / grid_size) + 1  # so that ceil(len/size) is last index
     grid = np.empty((rows, cols), dtype=object)
 
     for yi in range(rows):
@@ -247,7 +302,7 @@ def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
             # (pixel coordinates represent their centres)
             xs, ys = np.meshgrid(np.arange(left, right+1), np.arange(top, bottom+1), indexing='xy')
             pixel_coords = np.column_stack((xs.ravel(), ys.ravel()))
-            pixel_values = semantic_map[top:bottom + 1, left:right + 1].ravel()
+            pixel_values = occupancy_map[top:bottom + 1, left:right + 1].ravel()
 
             # filter block: remove all empty pixels
             mask = pixel_values != nothing_value
@@ -273,7 +328,7 @@ def construct_nn_grid(semantic_map, grid_size, grid_radius=None, **kwargs):
 # Filter to remove all intersections that are > pixel radius from the pixel centre.
 # Compute the distances to each remaining intersection point.
 # Take the min distance, if any remain.
-def find_collision(start, direction, pixels, **kwargs):
+def _find_collision(start, direction, pixels, **kwargs):
     """
     Finds the closest collision, if any, between a trace and a collection of pixels.
     Applies unit-less computations, retaining the same unit in output as used by the inputs,
@@ -343,56 +398,3 @@ def find_collision(start, direction, pixels, **kwargs):
             pixel_value = pixel_values[mask][idx]
 
     return intersection, distance, pixel_coord, pixel_value
-
-
-def lds_to_2d(ranges, centre, start_angle):
-    """
-    Converts LDS range data to Euclidean coordinates.
-    Applies a unit-less conversion, retaining the same unit in the 2D coords as used by the range values.
-    :param ranges: array (n,) - range values may contain nans, which are dropped
-    :param centre: array (2,) = [x,y] - centre point for ranges
-    :param start_angle: angle of first range (radians)
-    :return: array (n,2) of [x,y] coords (without nans)
-    """
-    angles = np.linspace(0, np.pi * 2, num=ranges.shape[0], endpoint=False) + start_angle
-    steps = np.column_stack((np.cos(angles), -np.sin(angles)))
-    points = steps * ranges.reshape(-1, 1) + centre
-    return points[~np.isnan(ranges)]
-
-
-def lds_to_occupancy_map(ranges, start_angle, size_px, **kwargs):
-    """
-    Converts LDS range data to a binary occupancy map.
-    :param ranges: array (n,) - range values may contain nans, which are dropped
-    :param start_angle: angle of first range (radians)
-    :param centre_px: array (2,) = float, [x,y] - centre point for ranges
-    :param size_px: int/float or tuple (h, w) = size of output map in pixels
-    :param kwargs
-
-    Keyword args:
-      pixel_size:
-      centre_px: tuple, float (x,y), relative to map centre (unit: pixels)
-        Usually centres LDS data exactly on centre of generated map (to sub-pixel resolution).
-        Use this to shift by some amount.
-      encoding: one of 'nn', 'antialiased', 'nn+offset':
-        nn: nearest neighbour
-        (TODO) antialised: blurs into adjacent pixels for implied sub-pixel resolution
-        (TODO) nn+offset: picks single NN pixel, but on second and third channels adds
-          x and y offset (-0.5 .. +0.5) in sub-pixel resolution
-
-    :return: array (h,w) of floats in range [0,1]
-    """
-
-    # config
-    pixel_size = kwargs.get('pixel_size', 1.0)
-    centre_px = kwargs.get('centre_px', (0.0, 0.0))
-    size_px = np.array(size_px) if len(size_px) == 2 else np.array([size_px, size_px])
-
-    map_centre_fpx = np.array((size_px-1) / 2) + np.array(centre_px)
-
-    lds_points = lds_to_2d(ranges, (0, 0), start_angle)
-    lds_points_px = np.round(lds_points/pixel_size + map_centre_fpx).astype(int)
-    lds_map = np.full(size_px, 0.0, dtype=np.float32)
-    lds_map[lds_points_px[:,1], lds_points_px[:,0]] = 1.0
-
-    return lds_map
