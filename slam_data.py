@@ -334,6 +334,7 @@ def random_floor_location(semantic_map, low=None, high=None, **kwargs):
         if cnt > 1000:
             raise ValueError(f"Failed to generate random location after {cnt} attempts")
 
+# FIXME still occasionally getting error: index 139 is out of bounds for axis 0 with size 139
 def class_at_location(semantic_map, location, **kwargs):
     """
     Identifies the class of the pixel at a given location in physical units.
