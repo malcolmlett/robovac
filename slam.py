@@ -361,6 +361,9 @@ class ADLOLoss(tf.keras.losses.Loss):
         y_pred: (B,4), accept part logit or scaled, and DLO parts scaled always
     """
     def __init__(self, name="adlo_loss", from_logits=True, reduction=None):
+        """
+        :param reduction: ignored. Required for deserialization.
+        """
         super(ADLOLoss, self).__init__(name=name)
         self._from_logits = from_logits
 
