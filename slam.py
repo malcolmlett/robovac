@@ -348,7 +348,7 @@ def adlo_block(input, n_units, output_logits):
     return output
 
 
-class ADLOLoss(tf.keras.losses.loss):
+class ADLOLoss(tf.keras.losses.Loss):
     """
     Custom loss for ADLO output.
     By default, assumes output_logits=True in model.
@@ -417,7 +417,7 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
             matches *= sample_weight
 
         self.correct.assign_add(tf.reduce_sum(matches))
-        self.total.assign_add(tf.cast(y_true.shape[0], self.dtype))
+        self.total.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
 
     def result(self):
         return self.correct / self.total
@@ -427,7 +427,7 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
         self.correct.assign(0.0)
 
 
-class LocError(tf.keras.metrics.Metric):
+class LocationError(tf.keras.metrics.Metric):
     """
     Metric against the ADLO 'delta location' output.
     By default, assumes output_logits=True in model.
@@ -441,7 +441,7 @@ class LocError(tf.keras.metrics.Metric):
         metric scalar 0.0 .. ~0.5
     """
     def __init__(self, name="loc_error", from_logits=True, **kwargs):
-        super(LocError, self).__init__(name=name, **kwargs)
+        super(LocationError, self).__init__(name=name, **kwargs)
         self.total_error = self.add_weight(name="total_error", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
         self._from_logits=from_logits
@@ -460,7 +460,7 @@ class LocError(tf.keras.metrics.Metric):
             losses *= sample_weight
 
         self.total_error.assign_add(tf.reduce_sum(losses))
-        self.count.assign_add(tf.cast(y_true.shape[0], self.dtype))
+        self.count.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
 
     def result(self):
         return self.total_error / self.count
@@ -503,7 +503,7 @@ class OrientationError(tf.keras.metrics.Metric):
             losses *= sample_weight
 
         self.total_error.assign_add(tf.reduce_sum(losses))
-        self.count.assign_add(tf.cast(y_true.shape[0], self.dtype))
+        self.count.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
 
     def result(self):
         return self.total_error / self.count
