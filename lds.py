@@ -40,6 +40,17 @@ import math
 import numpy as np
 
 
+# defaults
+# - using mm as the default unit
+__PIXEL_SIZE__ = 44.71   # mm/px
+__MIN_DISTANCE__ = 120    # 120mm
+__MAX_DISTANCE__ = 3500   # 3.5m in mm
+__NOISE_RANGES__ = np.array([
+    [0, 500, 15/1.96, 'abs'],
+    [500, +np.inf, 0.05/1.96, 'factor']
+])
+
+
 # Algorithm:
 # 1. Initialise a grid of cached nearest-neighbour "bubbles", having a circular shape and containing a count + list of
 #    all pixels within its area.
@@ -55,7 +66,7 @@ import numpy as np
 # 4. For each trace that hasn't already been consumed and for which the cache has pixels:
 #    1. Take all the pixels in the cache bubble and find the collision, if any, with the min distance
 #    2. For all traces that have had collisions, mark them as consumed.
-def lds_sample(semantic_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
+def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     """
     Generates LDS data sampled from a floor plan from a given centre position and reference angle.
     LDS data represents a sampling across a 360 degree counterclockwise spread, starting on the requested angle.
@@ -67,8 +78,9 @@ def lds_sample(semantic_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     this function uses that rule.
 
     Args:
-      semantic_map: array (r,c) of bool or float
+      occupancy_map: array (r,c) of bool, float, or int.
         Encoded as a 2D array of values.
+        If int or float datatype, assumed to only contain values 0.0 and 1.0
       centre: [x,y] of float, default: origin
         Point from which LDS sample is taken (unit: output units)
       angle: float, default: 0.0
@@ -79,16 +91,24 @@ def lds_sample(semantic_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
         Angle between each trace (radians)
       step_size: float, default: calculated s.t. there are 3 steps
         Position increment used by traces, in their direction (unit: output units)
-      max_distance: float, default: 100
-        Maximum distance that an LDS can observe (unit: output units)
-      nothing_value: float, default: 0.0.
-        The data value that indicates nothing is present at the pixel.
-        All other values are treated as pixels.
-      pixel_size: float, default: 1.0.
+      pixel_size: float, default: __PIXEL_SIZE__
         The size of the pixel in the desired output unit.
         Defaults to 1.0, meaning that we output in pixel units.
         Alternatively, for example, provide the width of a pixel in meters
         in order to work with meter coordinates.
+      min_distance: float, default: __MIN_DISTANCE__
+        Minimum distance that an LDS can observe (unit: output units).
+        Any traces that would hit an obstruction closer than this are omitted from the results.
+      max_distance: float, default: __MAX_DISTANCE__
+        Maximum distance that an LDS can observe (unit: output units)
+        Anything further than this is omitted from the results.
+      noise_ranges: (N,3) of float, default: __NOISE_RANGES
+        List or array of (3,) = [start (inclusive), end (exclusive), std.dev, mode].
+        The amount of gaussian noise to add to the results.
+        Mode is one of: 'abs', 'factor'
+      nothing_value: float, default: 0.0.
+        The data value that indicates nothing is present at the pixel.
+        All other values are treated as occupied.
 
     Returns:
       ranges: array (n,) of float
@@ -98,16 +118,18 @@ def lds_sample(semantic_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
 
     # config
     resolution = kwargs.get('resolution', np.deg2rad(1.0))
-    max_distance = kwargs.get('max_distance', 100)
+    pixel_size = kwargs.get('pixel_size', __PIXEL_SIZE__)
+    min_distance = kwargs.get('min_distance', __MIN_DISTANCE__)
+    max_distance = kwargs.get('max_distance', __MAX_DISTANCE__)
+    noise_ranges = kwargs.get('noise_ranges', __NOISE_RANGES__)
     step_size = kwargs.get('step_size', max_distance/3)
     nothing_value = kwargs.get('nothing_value', 0.0)
-    pixel_size = kwargs.get('pixel_size', 1.0)
 
     # initialise lookup cache
     grid_size_px = math.floor(step_size / pixel_size)  # conservatively prefer regions slightly closer together
     grid_radius_px = math.ceil(step_size / pixel_size)  # conservatively prefer regions slightly larger
     grid_size = grid_size_px * pixel_size  # in output unit, used for lookups later on
-    grid = construct_nn_grid(semantic_map, grid_size_px, grid_radius=grid_radius_px, nothing_value=nothing_value,
+    grid = construct_nn_grid(occupancy_map, grid_size_px, grid_radius=grid_radius_px, nothing_value=nothing_value,
                              pixel_size=pixel_size)
     grid_counts = np.array([[grid[r, c]['count'] for c in range(grid.shape[1])] for r in range(grid.shape[0])])
 
@@ -144,8 +166,23 @@ def lds_sample(semantic_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
             if not np.isnan(distance):
                 ranges[idx] = distance
 
-    # truncate ranges to max distance
+    # apply limitations according to specs
+    # - ranges < min distance are dropped (unseen)
+    # - ranges > max distance are dropped (unseen)
+    # - ranges within a given accuracy band have gaussian noise added
+    ranges[ranges < min_distance] = np.nan
     ranges[ranges > max_distance] = np.nan
+    if noise_ranges is not None:
+        for start, end, stddev, mode in noise_ranges:
+            mask = (ranges >= start) & (end is None or ranges < end)
+            noise = np.random.normal(0.0, 1.0, size=ranges.shape)
+            if mode == 'abs':
+                noise *= stddev
+            elif mode == 'factor':
+                noise *= ranges
+            else:
+                raise ValueError(f"Unknown noise range mode: {mode}")
+            ranges[mask] += noise[mask]
 
     return ranges
 
