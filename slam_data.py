@@ -21,6 +21,7 @@ __FLOOR_IDX__ = 0
 __OBSTRUCTION_IDX__ = 1
 __UNKNOWN_IDX__ = 2
 
+
 def one_hot_encode_floorplan(image):
     """
     Converts an RGB floorplan image into a semantic-map: a one-hot encoded tensor of the same form
@@ -82,7 +83,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     # identify ranges
     # - size of full map (W, H), physical units
     # - size of window (W, H), physical units
-    full_map_loc_range = np.array([semantic_map.shape[1], semantic_map.shape[0]]) * pixel_size
+    map_range_low, map_range_high = get_location_range(semantic_map, **kwargs)
     window_size = (np.ceil(max_distance / pixel_size).astype(int) * 2 + 1) * pixel_size
     window_range = np.array([window_size, window_size])
 
@@ -103,7 +104,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
             if sample_type == 0:
                 # New map, unknown location and orientation, loc/angle error disregarded
                 # Agent location: on floor
-                map_location = random_floor_location(semantic_map, (0, 0), full_map_loc_range)
+                map_location = random_floor_location(semantic_map, map_range_low, map_range_high)
                 map_angle = np.random.uniform(-np.pi, np.pi)
                 map_window, lds_map, ground_truth_map, _ = generate_training_data_sample(
                     semantic_map, map_location, map_angle, False, None, None, **kwargs)
@@ -112,7 +113,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 # Known map, known location/angle estimation with some small normal error
 
                 # Agent true location: on floor
-                agent_loc = random_floor_location(semantic_map, (0, 0), full_map_loc_range)
+                agent_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
                 agent_angle = np.random.uniform(-np.pi, np.pi)
 
                 # Map location = Estimated location: small normal error from agent location
@@ -134,7 +135,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 # Actual location must be on floor. Map location can be anywhere.
 
                 # Agent true location: on floor
-                agent_loc = random_floor_location(semantic_map, (0, 0), full_map_loc_range)
+                agent_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
                 agent_angle = np.random.uniform(-np.pi, np.pi)
 
                 # Map location: independent uniform random location within window distance
@@ -154,7 +155,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
 
                 # Map location: uniformly chosen spot anywhere on map
                 # - allowed to be in illegal positions
-                map_location = np.random.uniform((0, 0), full_map_loc_range)
+                map_location = np.random.uniform(map_range_low, map_range_high)
                 map_angle = np.random.uniform(-np.pi, np.pi)
 
                 # Agent location: independent uniformly chosen spot anywhere on map
@@ -163,7 +164,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 lds_loc = None
                 min_distance = max_distance * 1.5  # at most only 1/4th of diameter of LDS circles will overlap
                 while lds_loc is None or np.linalg.norm(map_location - lds_loc) < min_distance:
-                    lds_loc = random_floor_location(semantic_map, (0, 0), full_map_loc_range)
+                    lds_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
                 lds_angle = np.random.uniform(-np.pi, np.pi)  # uniform anywhere within 360-degree range
                 loc_error = lds_loc - map_location
                 angle_error = lds_angle - map_angle
@@ -306,18 +307,19 @@ def random_floor_location(semantic_map, low=None, high=None, **kwargs):
     Generates a random location within the floor region of the semantic map.
     Args:
         semantic_map: (H,W,C)
-        low: list/tuple/array (x,y), inclusive, default: (0,0)
-        high: list/tuple/array (x,y), exclusive, default: width,height of semantic_map
+        low: list/tuple/array (x,y), inclusive, default: inferred from provided map
+        high: list/tuple/array (x,y), exclusive, default: inferred from provided map
     Keyword args:
         pixel_size
     Returns:
         (x,y) float in physical units
     """
-    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    if low is None and high is None:
+        low, high = get_location_range(semantic_map, **kwargs)
     if low is None:
-        low = (0, 0)
+        low, _ = get_location_range(semantic_map, **kwargs)
     if high is None:
-        high = np.array([semantic_map.shape[1], semantic_map.shape[0]]) * pixel_size
+        _, high = get_location_range(semantic_map, **kwargs)
 
     # keep trying until we find a position that satisfies requirements
     cnt = 0
@@ -334,7 +336,8 @@ def random_floor_location(semantic_map, low=None, high=None, **kwargs):
         if cnt > 1000:
             raise ValueError(f"Failed to generate random location after {cnt} attempts")
 
-# FIXME still occasionally getting error: index 139 is out of bounds for axis 0 with size 139
+
+# TODO update so it can work against arrays/lists of locations
 def class_at_location(semantic_map, location, **kwargs):
     """
     Identifies the class of the pixel at a given location in physical units.
@@ -349,6 +352,36 @@ def class_at_location(semantic_map, location, **kwargs):
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
     loc_px = np.round(location / pixel_size).astype(int)
     return np.argmax(semantic_map[loc_px[1], loc_px[0]])
+
+
+# conversion from pixel to physical coordinates:
+# - a pixel's physical coordinate is at its centre, so the physical coords have range +/- 0.5 of that location
+# - a pixel-shape of (2,2) has px coords in range 0..1, if we extend to include the border then we have -0.5..+1.5
+def get_location_range(semantic_map, exclude_border=False, **kwargs):
+    """
+    Centralises the maths to accurately define the range of physical locations across a semantic map.
+    Optionally skips the half-pixel width around the edges.
+    Both returned low-high have a small margin removed so that it doesn't matter whether subsequent processing treats
+    them as inclusive or exclusive.
+    Args:
+      semantic_map: entire floorplan or selection
+      exclude_border: whether to omit the half-pixel width on the edges.
+        Can be used as a very simplistic heuristic to skip the outermost edge that probably has no useful points anyway.
+    Returns:
+      (low, high) - where low/high are both (x,y) coordinates
+    """
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    h, w = np.array(semantic_map.shape[0:2])
+    if exclude_border:
+        low_px = np.array((0, 0))
+        high_px = np.array((w - 1, h - 1))
+    else:
+        low_px = np.array((-0.4999, -0.4999))
+        high_px = np.array((w - 0.5001, h - 0.5001))
+
+    return low_px * pixel_size, high_px * pixel_size
+
+
 
 
 def save_dataset(dataset, file):
