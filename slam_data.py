@@ -1,11 +1,32 @@
 # Creates training data for the SLAM model.
 #
+# Datasets are represented as follows:
+#    Dataset ((input_maps, lds_maps), (output_maps, adlos), metadatas)
+# where:
+#   input_maps    - input semantic map from current estimated position (B,H,W,C)
+#                   - blank if current location unknown
+#   lds_maps      - input occupancy map from LDS (B,H,W)
+#   output_maps   - output semantic map, blank if don't care
+#   adlos         - output ADLO
+#   metadatas     - dict, must be removed before training but used elsewhere
+#
 # Semantic maps are encoded as follows:
 #  - shape: (H,W,C)
+#  - type: float, logits/softmax
 #  - channels:
 #     [0] = floor (white in RGB image encoding)
 #     [1] = obstruction (black in RGB image encoding)
 #     [2] = unknown (grey in RGB image encoding)
+#  - filled with all values "unknown" to indicate "unknown" or "don't care" state.
+#
+# ADLO is encoded as follows:
+#  - shape: (4,)
+#  - [0]: accept: logit/sigmoid - likelihood that the agent is present within the map, based on the LDS data
+#  - [1]: delta x: -0.5 .. +0.5 - percentage of window width to add to current estimated x-location
+#  - [2]: delta y: -0.5 .. +0.5 - percentage of window width to add to current estimated y-location
+#  - [3]: delta angle: -1.0 .. +1.0 - fraction of pi (+/-) to add to current estimated orientation
+#  - DLO values ignored when accept=false
+#  - DLO values all zero when processing a blank input map and accepting the LDS map.
 
 import lds
 import map_from_lds_train_data
@@ -23,6 +44,7 @@ __OBSTRUCTION_IDX__ = 1
 __UNKNOWN_IDX__ = 2
 
 
+# TODO rename to image_to_semantic_map
 def one_hot_encode_floorplan(image):
     """
     Converts an RGB floorplan image into a semantic-map: a one-hot encoded tensor of the same form
@@ -41,7 +63,7 @@ def one_hot_encode_floorplan(image):
     """
     # sanity check
     if not np.array_equal(np.unique(image), np.array([0, 192, 255])):
-      raise ValueError(f"Encountered unexpected values in image, expected [0, 192, 255], got: {np.unique(image)}")
+        raise ValueError(f"Encountered unexpected values in image, expected [0, 192, 255], got: {np.unique(image)}")
 
     # get each channel
     floor_mask = tf.reduce_all(tf.equal(image, [255, 255, 255]), axis=-1)
@@ -78,7 +100,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
           between samples taken directly from the floorplan and maps
           predicted by the model.
     Returns:
-         Dataset ((map_inputs, lds_inputs), (ground_truth_maps, adlos))
+         Dataset ((input_maps, lds_maps), (output_maps, adlos), metadatas)
     """
 
     tot_sample_types = 4
@@ -115,8 +137,9 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     print("Generating training data...")
     input_maps = []
     lds_maps = []
-    ground_truth_maps = []
+    output_maps = []
     adlos = []
+    metadatas = []
     attempts = 0
     for _ in tqdm.tqdm(range(num_samples)):
         # keep trying until we generate one sample
@@ -129,76 +152,90 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
 
             if sample_type == 0:
                 # New map, unknown location and orientation, loc/angle error disregarded
-                # Agent location: on floor
-                map_location = random_floor_location(semantic_map, map_range_low, map_range_high)
-                map_angle = np.random.uniform(-np.pi, np.pi)
-                map_window, lds_map, ground_truth_map, _ = generate_training_data_sample(
-                    semantic_map, map_location, map_angle, False, None, None, **kwargs)
-
-            elif sample_type == 1:
-                # Known map, known location/angle estimation with some small normal error
+                # - blank input map, populated LDS map
+                # - populated output map, A=accept, DLO=zeros
 
                 # Agent true location: on floor
-                agent_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
-                agent_angle = np.random.uniform(-np.pi, np.pi)
+                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
+                true_angle = np.random.uniform(-np.pi, np.pi)
+
+                # Map location = Estimated location: unknown
+                map_location, map_angle = None, None
+
+                input_map, lds_map, output_map, _ = generate_training_data_sample(
+                    semantic_map, true_loc, true_angle, False, True, None, None, **kwargs)
+
+            elif sample_type == 1:
+                # Known map, known location/angle estimation with small normal error
+                # - populated input map, populated LDS map
+                # - populated output map, A=accept, DLO=accurate low non-zero
+
+                # Agent true location: on floor
+                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
+                true_angle = np.random.uniform(-np.pi, np.pi)
 
                 # Map location = Estimated location: small normal error from agent location
-                # - allowed to be in illegal position
-                loc_error = np.random.normal((0, 0),
-                                             window_range / 2 * 0.1)  # normal about centre, std.dev = 10% of range
-                angle_error = np.random.uniform(0, np.pi * 0.1)  # normal about zero, std.dev = 10% of 180 degrees
+                # - allowed to be an illegal position
+                # - loc_error - normal about centre, std.dev = 10% of range
+                # - angle_error - normal about zero, std.dev = 10% of 180 degrees
+                loc_error = np.random.normal((0, 0), window_range / 2 * 0.1)
+                angle_error = np.random.uniform(0, np.pi * 0.1)
                 loc_error = np.clip(loc_error, -window_range / 2, +window_range / 2)
                 angle_error = np.clip(angle_error, -np.pi, +np.pi)
-                map_location = agent_loc - loc_error
-                map_angle = agent_angle - angle_error
+                map_location = true_loc - loc_error
+                map_angle = true_angle - angle_error
 
-                map_window, lds_map, ground_truth_map, _ = generate_training_data_sample(
-                    semantic_map, map_location, map_angle, True, loc_error, angle_error, **kwargs)
+                input_map, lds_map, output_map, _ = generate_training_data_sample(
+                    semantic_map, map_location, map_angle, True, True, loc_error, angle_error, **kwargs)
 
             elif sample_type == 2:
                 # Known map, location unknown and searching, with LDS data partially on this map window.
                 # Location of map window independent of LDS data
-                # Actual location must be on floor. Map location can be anywhere.
+                # - populated input map, populated LDS map
+                # - blank output map, A=accept, DLO=approximate high non-zero
 
                 # Agent true location: on floor
-                agent_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
-                agent_angle = np.random.uniform(-np.pi, np.pi)
+                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
+                true_angle = np.random.uniform(-np.pi, np.pi)
 
-                # Map location: independent uniform random location within window distance
+                # Map location: independent uniform random location WITHIN window distance
                 # - allowed to be in illegal position
-                loc_error = np.random.uniform(-window_range / 2,
-                                              +window_range / 2)  # uniform either side of zero, anywhere within window
-                angle_error = np.random.uniform(-np.pi, np.pi)  # uniform anywhere within 360-degree range
-                map_location = agent_loc - loc_error
-                map_angle = agent_angle - angle_error
+                # - loc_error - uniform either side of zero, anywhere within window
+                # - angle_error - uniform anywhere within 360-degree range
+                loc_error = np.random.uniform(-window_range / 2, +window_range / 2)
+                angle_error = np.random.uniform(-np.pi, np.pi)
+                map_location = true_loc - loc_error
+                map_angle = true_angle - angle_error
 
-                map_window, lds_map, ground_truth_map, _ = generate_training_data_sample(
-                    semantic_map, map_location, map_angle, True, loc_error, angle_error, **kwargs)
+                input_map, lds_map, output_map, _ = generate_training_data_sample(
+                    semantic_map, map_location, map_angle, True, False, loc_error, angle_error, **kwargs)
 
             elif sample_type == 3:
                 # Known map, location unknown and searching, with LDS not on this map window.
                 # LDS and map explicitly in different parts of the floor (max 1/4th overlap between LDS circles)
+                # - populated input map, populated LDS map
+                # - blank output map, A=reject, DLO=zero, but don't care
 
-                # Map location: uniformly chosen spot anywhere on map
-                # - allowed to be in illegal positions
-                map_location = np.random.uniform(map_range_low, map_range_high)
+                # Agent true location: on floor
+                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
+                true_angle = np.random.uniform(-np.pi, np.pi)
+
+                # Map location: independent uniform random location OUTSIDE window distance
+                # - allowed to be in illegal position
+                # - location - at most only 1/4th of diameter of LDS circles will overlap
+                # - angle - uniform anywhere within 360-degree range
+                min_distance = max_distance * 1.5
+                map_location = None
+                while map_location is None or np.linalg.norm(map_location - true_loc) < min_distance:
+                    map_location = np.random.uniform(map_range_low, map_range_high)
                 map_angle = np.random.uniform(-np.pi, np.pi)
+                loc_error = true_loc - map_location
+                angle_error = true_angle - map_angle
 
-                # Agent location: independent uniformly chosen spot anywhere on map
-                # - not close to map location
-                # - must be on floor
-                lds_loc = None
-                min_distance = max_distance * 1.5  # at most only 1/4th of diameter of LDS circles will overlap
-                while lds_loc is None or np.linalg.norm(map_location - lds_loc) < min_distance:
-                    lds_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
-                lds_angle = np.random.uniform(-np.pi, np.pi)  # uniform anywhere within 360-degree range
-                loc_error = lds_loc - map_location
-                angle_error = lds_angle - map_angle
-
-                map_window, _, _, _ = generate_training_data_sample(
-                    semantic_map, map_location, map_angle, True, loc_error, angle_error, **kwargs)
-                _, lds_map, ground_truth_map, _ = generate_training_data_sample(
-                    semantic_map, lds_loc, lds_angle, False, None, None, **kwargs)
+                input_map, _, _, _ = generate_training_data_sample(
+                    semantic_map, map_location, map_angle, True, False, loc_error, angle_error, **kwargs)
+                _, lds_map, output_map, _ = generate_training_data_sample(
+                    semantic_map, true_loc, true_angle, False, False, None, None, **kwargs)
 
                 # for expected NN outputs
                 # (error should be ignored by loss function, but if we do let it train on these values then we'd
@@ -220,22 +257,32 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                     loc_error[1] / window_range[1],  # convert to range: -0.5 .. +0.5
                     angle_error / np.pi  # convert to range: -1.0 .. +1.0
                 ])
-                input_maps.append(map_window)
+                metadata = {
+                    'sample_type': sample_type,
+                    'true_location': true_loc,
+                    'true_orientation': true_angle,
+                    'estimated_location': map_location,
+                    'estimated_orientation': map_angle
+                }
+                input_maps.append(input_map)
                 lds_maps.append(lds_map)
-                ground_truth_maps.append(ground_truth_map)
+                output_maps.append(output_map)
                 adlos.append(adlo)
+                metadatas.append(metadata)
                 break
 
     print(f"Generated {len(input_maps)} samples after {attempts} attempts")
     return tf.data.Dataset.from_tensor_slices((
         (input_maps, lds_maps),
-        (ground_truth_maps, adlos)
+        (output_maps, adlos),
+        metadatas
     ))
 
 
 # TODO consider changing API so that it takes: agent true location, agent estimated location
-def generate_training_data_sample(semantic_map, location, orientation, map_known, location_error, orientation_error,
-                                  **kwargs):
+# TODO consider splitting this out into two methods
+def generate_training_data_sample(semantic_map, location, orientation, map_known, gen_output_map, location_error,
+                                  orientation_error, **kwargs):
     """
     Simulates information that the agent might have and should infer given the agent's true location/orientation
     and the error in its estimate of that location/orientation.
@@ -256,6 +303,7 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
     :param location: (float, float) = (x,y) ground-truth location of agent
     :param orientation: (float) = radians ground-truth angle of orientation of agent
     :param map_known: bool, whether to simulate the agent knowing this section of map or having a blank input map
+    :param gen_output_map: boolean, whether to generate the expected output map, or a blank one
     :param location_error: None or float tuple, (delta x, deltay).
        Simulates an error on the agent's estimated location. Causes the LDS map to be offset relative to the map,
        in the opposite direction of the error.
@@ -318,14 +366,17 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
         # all unknown
         input_map = np.tile(unknown_value, (window_size_px[0], window_size_px[1], 1))
 
-    # generate ground-truth map
-    # (map_known:  aligned to map pixels and zero rotation)
-    # (!map_known: aligned to exact centre of window and agent's ground truth orientation)
-    if map_known:
-        ground_truth_map = map_from_lds_train_data.rotated_crop(
+    # generate output map
+    if not gen_output_map:
+        # don't care: blank map
+        output_map = np.tile(unknown_value, (window_size_px[0], window_size_px[1], 1))
+    elif map_known:
+        # map location known: align to map pixels and zero rotation
+        output_map = map_from_lds_train_data.rotated_crop(
             semantic_map, location_px, 0.0, size=window_size_px, mask='none', pad_value=unknown_value)
     else:
-        ground_truth_map = map_from_lds_train_data.rotated_crop(
+        # map location unknown: align to exact centre of window and agent's ground truth orientation
+        output_map = map_from_lds_train_data.rotated_crop(
             semantic_map, location_fpx, orientation, size=window_size_px, mask='inner-circle', pad_value=unknown_value)
 
     # generate LDS semantic map
@@ -336,7 +387,7 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
         ranges, angle=believed_orientation, size_px=window_size_px, centre_px=location_alignment_offset_fpx,
         pixel_size=pixel_size)
 
-    return input_map, lds_map, ground_truth_map, location_alignment_offset_fpx
+    return input_map, lds_map, output_map, location_alignment_offset_fpx
 
 
 def random_floor_location(semantic_map, low=None, high=None, **kwargs):
