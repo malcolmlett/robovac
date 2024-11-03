@@ -755,7 +755,10 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
 
     # - p(unobservable) = 1 - max{i} p(observed|Si)
     out[..., __UNKNOWN_IDX__] = 1 - max_observed
-    return out, location_start
+
+    # cast final result to float32
+    # (prior computations are in float64 by default)
+    return out.astype(np.float32), location_start
 
 
 def get_intersect_ranges(map1, map2, offset_px):
