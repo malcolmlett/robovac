@@ -511,6 +511,66 @@ def _predict_maps(model, lds_maps):
     return semantic_maps
 
 
+def pre_sampled_crop(centre, size_px, sample_locs, sample_maps, **kwargs):
+    """
+    Args:
+      centre: (x,y), unit: physical
+      size_px: (w,h), unit: pixels.
+      sample_locs: (N,2), unit: physical.
+      sample_maps: (N,H,W,C)
+    Keyword args:
+      sampling_mode: default 'all'.
+        One of: 'all', 'centre-first', 'uniform'.
+        'all' - uses all available samples within the region of the crop.
+        'centre-first' - picks the sample nearest to the centre plus
+          a random number of additional samples, up to a total of
+          max_samples. All samples are picked such that their
+          centres are within the region of the crop.
+        'uniform' - picks a random number of samples, up to a total of
+          max_samples, choosing any sample that has any overlap with
+          the region of the crop.
+      max_samples: maximum number of samples to take, default: 5
+        Ignored if sampling_mode is 'all'.
+      pixel_size: default __PIXEL_SIZE__
+      unknown_value: default __UNKNOWN_VALUE__
+    Returns:
+      semantic_map: (H,W,C)
+    """
+    # config
+    centre = np.array(centre)
+    size_px = np.array(size_px)
+    max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
+    sampling_mode = kwargs.get('sampling_mode', 'all')
+    max_samples = kwargs.get('max_samples', 5)
+
+    # identify samples to use
+    distances = np.linalg.norm(centre - sample_locs, axis=1)
+    target_sample_count = np.random.randint(1, max_samples)
+    print(f"target_sample_count: {target_sample_count}")
+    if sampling_mode == 'all':
+        # pick all with any overlap at all
+        sample_indices = np.arange(len(sample_locs))[distances <= max_distance * 2]
+    elif sampling_mode == 'centre-first':
+        centre_idx = np.argmin(distances)
+
+        # choose from the set with significant overlap
+        available_indices = np.arange(len(sample_locs))[distances <= max_distance]
+        available_indices[available_indices != centre_idx]
+        sample_indices = np.random.choice(available_indices, size=min(target_sample_count-1, len(available_indices)), replace=False)
+
+        # final result is centre plus randomly chosen ones
+        sample_indices = np.append(sample_indices, centre_idx)
+
+    elif sampling_mode == 'uniform':
+      # choose from the set with sufficient overlap
+      available_indices = np.arange(len(sample_locs))[distances <= max_distance * 1.5]
+      sample_indices = np.random.choice(available_indices, size=target_sample_count, replace=False)
+    else:
+      raise ValueError(f"Unknown sampling mode: {sampling_mode}")
+
+    print(f"Chosen samples: {sample_indices.shape} = {sample_indices}")
+
+
 # Combination is computed based on some probability logic.
 # Let p(observed|Si)
 #    = probability that particular position has been observed
@@ -608,15 +668,16 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
     elif output_range_apu is not None:
         output_range_apx = np.round(np.array(output_range_apu) / pixel_size).astype(int)
 
+    half_window_px = (window_size_px - 1) // 2
     if output_range_apx is not None:
-        offset_px = (output_range_apx[0:2] + (window_size_px - 1) // 2).astype(int)
+        offset_px = (output_range_apx[0:2] + half_window_px).astype(int)
         out_size_px = output_range_apx[2:4]
     else:
-        half_window_px = (window_size_px - 1) // 2
         min_locs_px = np.round(np.min(locs, axis=0) / pixel_size) - half_window_px
         max_locs_px = np.round(np.max(locs, axis=0) / pixel_size) - half_window_px + window_size_px
-        offset_px = (min_locs_px + (window_size_px - 1) // 2).astype(int)
+        offset_px = (min_locs_px + half_window_px).astype(int)
         out_size_px = (max_locs_px - min_locs_px).astype(int)
+    location_start = (offset_px - half_window_px) * pixel_size
 
     # compute max and sums across entire map
     # also compute sum over samples
@@ -647,7 +708,7 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
 
     # - p(unobservable) = 1 - max{i} p(observed|Si)
     out[..., __UNKNOWN_IDX__] = 1 - max_observed
-    return out
+    return out, location_start
 
 
 def get_intersect_ranges(map1, map2, offset_px):
