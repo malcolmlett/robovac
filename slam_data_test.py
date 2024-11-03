@@ -1,5 +1,6 @@
 import numpy as np
 from slam_data import *
+from slam_data import _map_shape
 
 
 def run_test_suite():
