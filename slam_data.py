@@ -67,6 +67,16 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
         sample_types: int, tuple, list or array
             Collection of sample types to generate from.
             Allowed values include: 0, 1, 2, 3.
+        model: default None
+          Model to use for generating input maps.
+        predicted_samples: tuple (locations, semantic_maps).
+          Pre-generated samples of semantic map predictions across the full map.
+          Provide at-most one of this or 'model'.
+        model_weight: float in range 0.0 to 1.0 (inclusive).
+          Default: 1.0 if model is present, 0.0 otherwise.
+          If provided, the generated input maps will be a weighted average
+          between samples taken directly from the floorplan and maps
+          predicted by the model.
     Returns:
          Dataset ((map_inputs, lds_inputs), (ground_truth_maps, adlos))
     """
@@ -75,11 +85,18 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
     max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
     sample_types = np.array(kwargs.get('sample_types', range(tot_sample_types)))
-    sample_types = np.ravel(np.array(sample_types)) # cleanup type variations
+    sample_types = np.ravel(np.array(sample_types))  # cleanup type variations
+    model = kwargs.get('model', None)
+    model_weight = kwargs.get('model_weight', 1.0 if model is not None else 0.0)
+    predicted_sample_locs, predicted_sample_maps = kwargs.get('predicted_samples', (None, None))
     print(f"Generating {num_samples} samples of training data")
     print(f"Pixel size: {pixel_size}")
     print(f"Max distance: {max_distance}")
     print(f"Sample types: {sample_types}")
+    if model is not None or predicted_sample_maps is not None:
+        print(f"Input maps: using predicted input maps with weight {model_weight}")
+    else:
+        print("Input maps: using floorplan samples only")
 
     # identify ranges
     # - size of full map (W, H), physical units
@@ -88,6 +105,13 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     window_size = (np.ceil(max_distance / pixel_size).astype(int) * 2 + 1) * pixel_size
     window_range = np.array([window_size, window_size])
 
+    # generate sampling of predicted maps
+    if model is not None:
+        predicted_sample_locs, _, _, predicted_sample_maps = take_samples_covering_map(
+            semantic_map, model, sampling_mode='random')
+    kwargs['predicted_samples'] = (predicted_sample_locs, predicted_sample_maps)
+
+    # do data generation
     input_maps = []
     lds_maps = []
     ground_truth_maps = []
@@ -187,7 +211,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
             if tot_sample_types < (3 + 1):
                 raise ValueError("tot_sample_types needs revising: {tot_sample_types}")
 
-            # emit results
+            # emit result
             if lds_map is not None:
                 adlo = np.array([
                     1.0 if accept else 0.0,
@@ -195,7 +219,6 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                     loc_error[1] / window_range[1],  # convert to range: -0.5 .. +0.5
                     angle_error / np.pi  # convert to range: -1.0 .. +1.0
                 ])
-
                 input_maps.append(map_window)
                 lds_maps.append(lds_map)
                 ground_truth_maps.append(ground_truth_map)
@@ -259,6 +282,9 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
     max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
     unknown_value = kwargs.get('unknown_value', default_unknown_value)
+    predicted_sample_locs, predicted_sample_maps = kwargs.get('predicted_samples', (None, None))
+    model_weight = kwargs.get('model_weight', 1.0 if predicted_sample_maps is not None else 0.0)
+
     location_error = np.array(location_error) if location_error is not None else np.array([0.0, 0.0])
     orientation_error = orientation_error if orientation_error is not None else 0.0
     window_size_px = np.ceil(max_distance / pixel_size).astype(int) * 2 + 1
@@ -266,7 +292,8 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
 
     # take LDS sample
     lds_orientation = (orientation + orientation_error) if np.isfinite(orientation_error) else orientation
-    ranges = lds.lds_sample(semantic_map[:, :, __OBSTRUCTION_IDX__], location + location_error, lds_orientation, **kwargs)
+    ranges = lds.lds_sample(semantic_map[:, :, __OBSTRUCTION_IDX__], location + location_error,
+                            lds_orientation, **kwargs)
     if (np.nanmax(ranges) < pixel_size) or ranges[~np.isnan(ranges)].size == 0:
         return None, None, None, None
 
@@ -276,21 +303,29 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
     location_px = np.round(location_fpx).astype(int)
     location_alignment_offset_fpx = location_fpx - location_px  # true centre relative to window centre
     if map_known:
-        map_window = map_from_lds_train_data.rotated_crop(
+        # crop from original floorplan
+        input_map = map_from_lds_train_data.rotated_crop(
             semantic_map, location_px, 0.0, size=window_size_px, mask='none', pad_value=unknown_value)
+
+        # combine with crop from predictions
+        if predicted_sample_maps is not None and model_weight > 0.0:
+            predicted_map = pre_sampled_crop(
+                location, window_size_px, predicted_sample_locs, predicted_sample_maps, sampling_mode='centre-first',
+                max_samples=5)
+            input_map = input_map * (1.0 - model_weight) + predicted_map * model_weight
     else:
         # all unknown
-        map_window = np.tile(unknown_value, (window_size_px[0], window_size_px[1], 1))
+        input_map = np.tile(unknown_value, (window_size_px[0], window_size_px[1], 1))
 
     # generate ground-truth map
     # (map_known:  aligned to map pixels and zero rotation)
     # (!map_known: aligned to exact centre of window and agent's ground truth orientation)
     if map_known:
         ground_truth_map = map_from_lds_train_data.rotated_crop(
-          semantic_map, location_px, 0.0, size=window_size_px, mask='none', pad_value=unknown_value)
+            semantic_map, location_px, 0.0, size=window_size_px, mask='none', pad_value=unknown_value)
     else:
         ground_truth_map = map_from_lds_train_data.rotated_crop(
-          semantic_map, location_fpx, orientation, size=window_size_px, mask='inner-circle', pad_value=unknown_value)
+            semantic_map, location_fpx, orientation, size=window_size_px, mask='inner-circle', pad_value=unknown_value)
 
     # generate LDS semantic map
     # (oriented according to agent's believed orientation, which omits the orientation_error,
@@ -300,7 +335,7 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
         ranges, angle=believed_orientation, size_px=window_size_px, centre_px=location_alignment_offset_fpx,
         pixel_size=pixel_size)
 
-    return map_window, lds_map, ground_truth_map, location_alignment_offset_fpx
+    return input_map, lds_map, ground_truth_map, location_alignment_offset_fpx
 
 
 def random_floor_location(semantic_map, low=None, high=None, **kwargs):
