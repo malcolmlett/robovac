@@ -544,7 +544,7 @@ def _predict_maps(model, lds_maps):
     unknown_maps = np.tile(unknown_value, tuple(lds_maps.shape) + (1,))
     (semantic_maps, adlos) = model.predict((unknown_maps, lds_maps))
     semantic_maps = tf.math.softmax(semantic_maps, axis=-1)
-    return semantic_maps
+    return tf.cast(semantic_maps, tf.float32)
 
 
 def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
