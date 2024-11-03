@@ -112,6 +112,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     kwargs['predicted_samples'] = (predicted_sample_locs, predicted_sample_maps)
 
     # do data generation
+    print("Generating training data...")
     input_maps = []
     lds_maps = []
     ground_truth_maps = []
