@@ -828,10 +828,10 @@ def validate_dataset(dataset):
             raise ValueError(f"{name} has values outside of desired range, found: {np.min(tensor)}-{np.max(tensor)}")
 
     count = 0
-    for (map_window, lds_map), (ground_truth_map, adlo) in dataset:
-        assert_in_range("map_window", map_window, 0.0, 1.0)
-        assert_in_range("lds_map", map_window, 0.0, 1.0)
-        assert_in_range("ground_truth_map", map_window, 0.0, 1.0)
+    for (input_map, lds_map), (ground_truth_map, adlo) in dataset:
+        assert_in_range("input_map", input_map, 0.0, 1.0)
+        assert_in_range("lds_map", input_map, 0.0, 1.0)
+        assert_in_range("ground_truth_map", input_map, 0.0, 1.0)
         assert_in_range("accept", adlo[0], 0.0, 1.0)
         assert_in_range("loc-x", adlo[1], -0.5, 0.5)
         assert_in_range("loc-y", adlo[2], -0.5, 0.5)
@@ -841,29 +841,35 @@ def validate_dataset(dataset):
 
 
 def show_dataset(dataset, num=5):
-    for (map_window, lds_map), (ground_truth_map, adlo) in dataset.take(num):
-        show_data_sample(map_window, lds_map, ground_truth_map, adlo)
+    for (input_map, lds_map), (ground_truth_map, adlo) in dataset.take(num):
+        show_data_sample(input_map, lds_map, ground_truth_map, adlo)
 
 
-def show_data_sample(map_window, lds_map, ground_truth_map, adlo):
-    print(f"map_window:       {map_window.shape}")
+def show_data_sample(input_map, lds_map, ground_truth_map, adlo):
+    print(f"input_map:        {input_map.shape}")
     print(f"lds_map:          {lds_map.shape}")
     print(f"ground_truth_map: {ground_truth_map.shape}")
     print(f"adlo:             {adlo}")
 
-    range = np.array([map_window.shape[1], map_window.shape[0]])
-    centre = range / 2
-    error_loc = centre + adlo[1:3] * range
-    angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), -np.sin(adlo[3] * np.pi)]) * 50
+    map_size = np.array([input_map.shape[1], input_map.shape[0]])
 
     plt.figure(figsize=(10, 2))
     plt.subplot(1, 3, 1)
     plt.title('Map')
-    plt.imshow(map_window)
+    plt.imshow(input_map)
     plt.axis('off')
-    plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
-    plt.scatter(centre[0], centre[1], c='k', s=50)
-    plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
+    if not adlo[0]:
+        # to be rejected so just add cross through map
+        plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
+        plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
+    else:
+        # show adlo relative to centre dot
+        centre = map_size / 2
+        error_loc = centre + adlo[1:3] * map_size
+        angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), np.sin(adlo[3] * np.pi)]) * 50
+        plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
+        plt.scatter(centre[0], centre[1], c='k', s=50)
+        plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
 
     plt.subplot(1, 3, 2)
     plt.title('LDS')
@@ -1006,17 +1012,19 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
         plt.title('Map')
         plt.imshow(map_window)
         plt.axis('off')
-        if adlo is not None:
+        if adlo is not None and not adlo[0]:
+            # to be rejected so just add cross through map
+            plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
+            plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
+        elif adlo is not None:
+            # show adlo relative to centre dot
             centre = map_size / 2
             error_loc = centre + adlo[1:3] * map_size
             angle_loc = error_loc + np.array([np.cos(adlo[3] * np.pi), np.sin(adlo[3] * np.pi)]) * 50
             plt.plot([error_loc[0], angle_loc[0]], [error_loc[1], angle_loc[1]], c='m')
             plt.scatter(centre[0], centre[1], c='k', s=50)
             plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
-        if adlo is not None and not adlo[0]:
-            # if to be rejected, add cross through map
-            plt.plot([0, map_size[0] - 1], [0, map_size[1] - 1], c='y')
-            plt.plot([0, map_size[0] - 1], [map_size[1] - 1, 0], c='y')
+
 
     if lds_map is not None:
         plt.subplot(1, cols, next(i))
