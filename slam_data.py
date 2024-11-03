@@ -511,13 +511,16 @@ def _predict_maps(model, lds_maps):
     return semantic_maps
 
 
-def pre_sampled_crop(centre, size_px, sample_locs, sample_maps, **kwargs):
+def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
     """
+    Combines a bunch of semantic maps to generate a single cropped input map,
+    usually as part of training data generation.
     Args:
       centre: (x,y), unit: physical
       size_px: (w,h), unit: pixels.
-      sample_locs: (N,2), unit: physical.
+      sample_locations: (N,2), unit: physical.
       sample_maps: (N,H,W,C)
+        Semantic maps, usually from prediction.
     Keyword args:
       sampling_mode: default 'all'.
         One of: 'all', 'centre-first', 'uniform'.
@@ -544,31 +547,39 @@ def pre_sampled_crop(centre, size_px, sample_locs, sample_maps, **kwargs):
     max_samples = kwargs.get('max_samples', 5)
 
     # identify samples to use
-    distances = np.linalg.norm(centre - sample_locs, axis=1)
-    target_sample_count = np.random.randint(1, max_samples)
-    print(f"target_sample_count: {target_sample_count}")
+    distances = np.linalg.norm(centre - sample_locations, axis=1)
+    target_sample_count = np.random.randint(1, max_samples + 1)
     if sampling_mode == 'all':
         # pick all with any overlap at all
-        sample_indices = np.arange(len(sample_locs))[distances <= max_distance * 2]
+        sample_indices = np.arange(len(sample_locations))[distances <= max_distance * 2]
     elif sampling_mode == 'centre-first':
         centre_idx = np.argmin(distances)
 
         # choose from the set with significant overlap
-        available_indices = np.arange(len(sample_locs))[distances <= max_distance]
-        available_indices[available_indices != centre_idx]
-        sample_indices = np.random.choice(available_indices, size=min(target_sample_count-1, len(available_indices)), replace=False)
+        available_indices = np.arange(len(sample_locations))[distances <= max_distance]
+        available_indices = available_indices[available_indices != centre_idx]
+        sample_indices = np.random.choice(available_indices, size=min(target_sample_count - 1, len(available_indices)),
+                                          replace=False)
 
         # final result is centre plus randomly chosen ones
         sample_indices = np.append(sample_indices, centre_idx)
-
     elif sampling_mode == 'uniform':
-      # choose from the set with sufficient overlap
-      available_indices = np.arange(len(sample_locs))[distances <= max_distance * 1.5]
-      sample_indices = np.random.choice(available_indices, size=target_sample_count, replace=False)
+        # choose from the set with sufficient overlap
+        available_indices = np.arange(len(sample_locations))[distances <= max_distance * 1.5]
+        sample_indices = np.random.choice(available_indices, size=min(target_sample_count, len(available_indices)),
+                                          replace=False)
     else:
-      raise ValueError(f"Unknown sampling mode: {sampling_mode}")
+        raise ValueError(f"Unknown sampling mode: {sampling_mode}")
+    sample_indices = sample_indices.astype(int)
 
-    print(f"Chosen samples: {sample_indices.shape} = {sample_indices}")
+    # combine chosen samples
+    centre_px = np.round(centre / lds.__PIXEL_SIZE__).astype(int)
+    window_radius_px = (size_px - 1) // 2
+    output_range_px = (centre_px[0] - window_radius_px[0], centre_px[1] - window_radius_px[1], size_px[0], size_px[1])
+    combined_map, _ = combine_semantic_maps(
+        sample_locations[sample_indices], tf.gather(sample_maps, sample_indices),
+        output_range_px=output_range_px, **kwargs)
+    return combined_map
 
 
 # Combination is computed based on some probability logic.
