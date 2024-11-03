@@ -386,7 +386,7 @@ def get_location_range(semantic_map, exclude_border=False, **kwargs):
 def take_samples_covering_map(semantic_map, model=None, **kwargs):
     """
     Generates a bunch of sample points and LDS maps to cover the area of the given map.
-    These can be supplied to the model for map prediction.
+    Then uses the model to predict the semantic maps, if a model is given.
 
     Args:
       semantic_map: entire floorplan or section
@@ -423,7 +423,7 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
     w = semantic_map.shape[1] * pixel_size
     h = semantic_map.shape[0] * pixel_size
     dist = resolution * max_distance
-    target_count = np.ceil(w * h / dist ** 2)
+    target_count = np.ceil(w * h / dist ** 2).astype(int)
     map_range_low, map_range_high = get_location_range(semantic_map, **kwargs)
 
     # Generate sample points
@@ -486,12 +486,12 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
 
     # Do semantic map generation
     semantic_maps = None
-    if model:
+    if model is not None:
         print("Generating semantic maps...")
         semantic_maps = _predict_maps(model, lds_maps)
 
     # return
-    if semantic_maps:
+    if semantic_maps is not None:
         return locs, orientations, lds_maps, semantic_maps
     else:
         return locs, orientations, lds_maps
@@ -501,7 +501,7 @@ def _predict_maps(model, lds_maps):
     """
     Uses the model to predict the semantic maps.
     Return:
-      (locs, orientations, semantic_maps) with predicted maps
+      nd.array (N,W,H,C), predicted semantic maps
     """
     unknown_value = np.zeros(__CLASSES__, dtype=np.float32)
     unknown_value[__UNKNOWN_IDX__] = 1
