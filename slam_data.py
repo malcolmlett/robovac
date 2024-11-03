@@ -383,6 +383,134 @@ def get_location_range(semantic_map, exclude_border=False, **kwargs):
     return low_px * pixel_size, high_px * pixel_size
 
 
+def take_samples_covering_map(semantic_map, model=None, **kwargs):
+    """
+    Generates a bunch of sample points and LDS maps to cover the area of the given map.
+    These can be supplied to the model for map prediction.
+
+    Args:
+      semantic_map: entire floorplan or section
+      model: model for semantic map prediction.
+        Or omit to exclude semantic_maps from the output.
+
+    Keyword args:
+      pixel_size: the usual
+      max_distance: the usual
+      resolution: float, default: 0.25.
+        Target resolution of sample points, as a fraction of the LDS max distance.
+        For example, 0.25 aims to achieve sampling points on a grid with
+        0.25*max_distance distance between them.
+        In 'random' sampling mode, this is only approximate.
+      sampling mode: 'random' or 'grid', default: 'random'.
+
+    Return:
+      (locations, orientations, lds_maps, semantic_maps), where:
+        locations/orientation - physical locations and orientations of agent
+        lds_maps - LDS maps taken by agent at those locations
+        semantic_maps - predicted semantic maps by model from those LDS maps, omitted
+          if no model given.
+    """
+    # Config
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
+    resolution = kwargs.get('resolution', 0.25)
+    sampling_mode = kwargs.get('sampling_mode', 'random')
+
+    # Calculate number of samples to take
+    # - if doing a uniform grid with distance d, and ignoring floor vs unknown,
+    #   total sample points would be (w/d) * (h/d) = (w*h)/d**2
+    # - so use that as the number of points to generate under random sampling mode
+    w = semantic_map.shape[1] * pixel_size
+    h = semantic_map.shape[0] * pixel_size
+    dist = resolution * max_distance
+    target_count = np.ceil(w * h / dist ** 2)
+    map_range_low, map_range_high = get_location_range(semantic_map, **kwargs)
+
+    # Generate sample points
+    if sampling_mode == 'random':
+        locs = np.random.uniform(map_range_low, map_range_high, size=(target_count, 2))
+        orientations = np.random.uniform(-np.pi, np.pi, size=(target_count,))
+    elif sampling_mode == 'grid':
+        x, y = np.meshgrid(np.arange(start=map_range_low[0], stop=map_range_high[0], step=dist),
+                           np.arange(start=map_range_low[1], stop=map_range_high[1], step=dist))
+        locs = np.stack((x.flatten(), y.flatten()), axis=1)
+        orientations = np.zeros(shape=(locs.shape[0],), dtype=np.float32)
+    else:
+        raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
+
+    # Filter: only include points on the floor
+    # - will produce slightly less sample points than target, but it's fine
+    mask = np.full(locs.shape[0], True)
+    for i in range(locs.shape[0]):
+        loc = locs[i]
+        mask[i] = class_at_location(semantic_map, loc, **kwargs) == __FLOOR_IDX__
+    locs = locs[mask]
+    orientations = orientations[mask]
+
+    # Generate LDS maps
+    # - just like in generate_training_data_sample(), we align to map pixels
+    #   when rendering
+    window_size_px = np.ceil(max_distance / pixel_size).astype(int) * 2 + 1
+    window_size_px = np.array([window_size_px, window_size_px])
+    locs_fpx = locs / pixel_size  # sub-pixel resolution ("float pixels")
+    locs_px = np.round(locs_fpx).astype(int)
+    locs_alignment_offset_fpx = locs_fpx - locs_px  # true centre relative to window centre
+
+    # FIXME WORKAROUND
+    # Somehow I'm getting 159x159 windows instead of 149x149 that I've trained the model on.
+    # Need to figure out what's going on here.
+    def clip_to_size(map):
+        target_shape = np.array([149, 149])
+        clip_start = (map.shape[0:2] - target_shape) // 2
+        clip_end = clip_start + target_shape
+        return map[clip_start[0]:clip_end[0], clip_start[1]:clip_end[1], ...]
+
+    # Do LDS map generation
+    # - generating the first one first so we can pre-allocate the result array
+    print(f"Generating {locs.shape[0]} LDS maps...")
+    occupancy_map = semantic_map[..., __OBSTRUCTION_IDX__]
+    ranges = lds.lds_sample(occupancy_map, locs[0], orientations[0], **kwargs)
+    first_map = lds.lds_to_occupancy_map(
+        ranges, angle=orientations[0], size_px=window_size_px,
+        centre_px=locs_alignment_offset_fpx[0], pixel_size=pixel_size)
+    first_map = clip_to_size(first_map)
+    lds_maps = np.zeros((locs.shape[0],) + first_map.shape)
+    lds_maps[0] = first_map
+    for i in range(1, locs.shape[0]):
+        ranges = lds.lds_sample(occupancy_map, locs[i], orientations[i], **kwargs)
+        lds_map = lds.lds_to_occupancy_map(
+            ranges, angle=orientations[i], size_px=window_size_px,
+            centre_px=locs_alignment_offset_fpx[i], pixel_size=pixel_size)
+        lds_map = clip_to_size(lds_map)
+        lds_maps[i] = lds_map
+
+    # Do semantic map generation
+    semantic_maps = None
+    if model:
+        print("Generating semantic maps...")
+        semantic_maps = _predict_maps(model, lds_maps)
+
+    # return
+    if semantic_maps:
+        return locs, orientations, lds_maps, semantic_maps
+    else:
+        return locs, orientations, lds_maps
+
+
+def _predict_maps(model, lds_maps):
+    """
+    Uses the model to predict the semantic maps.
+    Return:
+      (locs, orientations, semantic_maps) with predicted maps
+    """
+    unknown_value = np.zeros(__CLASSES__, dtype=np.float32)
+    unknown_value[__UNKNOWN_IDX__] = 1
+    unknown_maps = np.tile(unknown_value, tuple(lds_maps.shape) + (1,))
+    (semantic_maps, adlos) = model.predict((unknown_maps, lds_maps))
+    semantic_maps = tf.math.softmax(semantic_maps, axis=-1)
+    return semantic_maps
+
+
 # Combination is computed based on some probability logic.
 # Let p(observed|Si)
 #    = probability that particular position has been observed
