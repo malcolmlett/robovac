@@ -935,19 +935,18 @@ def load_dataset(file):
             metadatas = np.full((input_maps.shape[0], 8), np.nan, dtype=np.float32)
             print("Warning: no metadata available in this dataset. Using dummy values.")
 
+    # older format: adlos were saved in float64
+    # (convert, for consistency and so that validate_dataset() passes)
+    if adlos.dtype != np.float32:
+        print(f"Note: upgraded adlos datatype from {adlos.dtype}.")
+        adlos = adlos.astype(np.float32)
+
     print(f"Loaded:")
     print(f"  input_maps:  {np.shape(input_maps)} x {input_maps.dtype}")
     print(f"  lds_maps:    {np.shape(lds_maps)} x {lds_maps.dtype}")
     print(f"  output_maps: {np.shape(output_maps)} x {output_maps.dtype}")
     print(f"  adlos:       {np.shape(adlos)} x {adlos.dtype}")
     print(f"  metadatas:   {np.shape(metadatas)} x {metadatas.dtype}")
-
-    # older format: adlos were saved in float64
-    # (convert, for consistency and so that validate_dataset() passes)
-    if adlos.dtype != np.float32:
-      adlos = adlos.astype(np.float32)
-      print(f"Upgraded adlos datatype:")
-      print(f"  adlos:       {np.shape(adlos)} x {adlos.dtype}")
 
     dataset = tf.data.Dataset.from_tensor_slices((
         (input_maps, lds_maps),
