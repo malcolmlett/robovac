@@ -933,6 +933,7 @@ def load_dataset(file):
         else:
             # older format had no metadata
             metadatas = np.full((input_maps.shape[0], 8), np.nan, dtype=np.float32)
+            print("Warning: no metadata available in this dataset. Using dummy values.")
 
     print(f"Loaded:")
     print(f"  input_maps:  {np.shape(input_maps)} x {input_maps.dtype}")
