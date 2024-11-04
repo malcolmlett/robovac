@@ -264,7 +264,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                     sample_type,
                     map_location[0] if map_location is not None else np.nan,
                     map_location[1] if map_location is not None else np.nan,
-                    map_angle if map_angle is not None else np.nan,
+                    0.0 if map_angle is not None else np.nan,  # map always at 0-degrees
                     agent_location[0],
                     agent_location[1],
                     agent_angle
@@ -917,19 +917,36 @@ def load_dataset(file):
     :param file: The file to load from
     :return: tf.data.Dataset
     """
-    data = np.load(file)
-    input_maps = data['input_maps']
-    lds_maps = data['ld_maps']
-    output_maps = data['output_maps'] or data['ground_truth_maps']
-    adlos = data['adlos']
-    metadatas = data['metadatas'] or np.zeros((input_maps.shape[0], 8))
+    with np.load(file, allow_pickle=False) as data:
+        input_maps = data['input_maps']
+        lds_maps = data['ld_maps']
+        adlos = data['adlos']
+
+        if 'output_maps' in data.keys():
+            output_maps = data['output_maps']
+        else:
+            # older label
+            output_maps = data['ground_truth_maps']
+
+        if 'metadatas' in data.keys():
+            metadatas = data['metadatas']
+        else:
+            # older format had no metadata
+            metadatas = np.full((input_maps.shape[0], 8), np.nan, dtype=np.float32)
 
     print(f"Loaded:")
-    print(f"  input_maps:  {np.shape(input_maps)}")
-    print(f"  lds_maps:    {np.shape(lds_maps)}")
-    print(f"  output_maps: {np.shape(output_maps)}")
-    print(f"  adlos:       {np.shape(adlos)}")
-    print(f"  metadatas:   {np.shape(metadatas)}")
+    print(f"  input_maps:  {np.shape(input_maps)} x {input_maps.dtype}")
+    print(f"  lds_maps:    {np.shape(lds_maps)} x {lds_maps.dtype}")
+    print(f"  output_maps: {np.shape(output_maps)} x {output_maps.dtype}")
+    print(f"  adlos:       {np.shape(adlos)} x {adlos.dtype}")
+    print(f"  metadatas:   {np.shape(metadatas)} x {metadatas.dtype}")
+
+    # older format: adlos were saved in float64
+    # (convert, for consistency and so that validate_dataset() passes)
+    if adlos.dtype != np.float32:
+      adlos = adlos.astype(np.float32)
+      print(f"Upgraded adlos datatype:")
+      print(f"  adlos:       {np.shape(adlos)} x {adlos.dtype}")
 
     dataset = tf.data.Dataset.from_tensor_slices((
         (input_maps, lds_maps),
