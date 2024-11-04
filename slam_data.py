@@ -30,14 +30,16 @@
 #  - DLO values all zero when processing a blank input map and accepting the LDS map.
 #
 # The metadata array is encoded as follows:
-#  - shape: (6,)
+#  - shape: (8,)
 #  - type: float
 #  - [0]: floorplan id - round to nearest int when using
 #  - [1]: sample type - round to nearest int when using
-#  - [2]: input map centre location (x,y), float, units: physical
-#  - [3]: input map orientation, unit: radians
-#  - [4]: agent location (x,y), float, units: physical
-#  - [5]: agent orientation, unit: radians
+#  - [2]: input map centre x, float, units: physical
+#  - [3]: input map centre y, float, units: physical
+#  - [4]: input map orientation, unit: radians
+#  - [5]: agent x, float, units: physical
+#  - [6]: agent y, float, units: physical
+#  - [7]: agent orientation, unit: radians
 
 import lds
 import map_from_lds_train_data
@@ -150,7 +152,6 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     lds_maps = []
     output_maps = []
     adlos = []
-    sample_types = []
     metadatas = []
     attempts = 0
     for _ in tqdm.tqdm(range(num_samples)):
@@ -261,16 +262,18 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 metadata = np.array([
                     2.0,  # always static floorplan Id for now
                     sample_type,
-                    map_location,
-                    map_angle,
-                    agent_location,
+                    map_location[0] if map_location is not None else np.nan,
+                    map_location[1] if map_location is not None else np.nan,
+                    map_angle if map_angle is not None else np.nan,
+                    agent_location[0],
+                    agent_location[1],
                     agent_angle
                 ])
                 input_maps.append(input_map)
                 lds_maps.append(lds_map)
                 output_maps.append(output_map)
-                adlos.append(adlo)
-                metadatas.append(metadata)
+                adlos.append(adlo.astype(np.float32))
+                metadatas.append(metadata.astype(np.float32))
                 break
 
     print(f"Generated {len(input_maps)} samples after {attempts} attempts")
@@ -919,7 +922,7 @@ def load_dataset(file):
     lds_maps = data['ld_maps']
     output_maps = data['output_maps'] or data['ground_truth_maps']
     adlos = data['adlos']
-    metadatas = data['metadatas'] or np.zeros((input_maps.shape[0], 6))
+    metadatas = data['metadatas'] or np.zeros((input_maps.shape[0], 8))
 
     print(f"Loaded:")
     print(f"  input_maps:  {np.shape(input_maps)}")
@@ -946,15 +949,26 @@ def validate_dataset(dataset):
         if np.min(tensor) < allowed_min or np.max(tensor) > allowed_max:
             raise ValueError(f"{name} has values outside of desired range, found: {np.min(tensor)}-{np.max(tensor)}")
 
+    def assert_dtype(name, tensor, allowed_dtype):
+        if tensor.dtype != allowed_dtype:
+            raise ValueError(f"{name} has wrong datatype, found: {tensor.dtype}")
+
     count = 0
-    for (input_map, lds_map), (output_map, adlo), metadatas in dataset:
+    for (input_map, lds_map), (output_map, adlo), metadata in dataset:
         assert_in_range("input_map", input_map, 0.0, 1.0)
-        assert_in_range("lds_map", input_map, 0.0, 1.0)
-        assert_in_range("ground_truth_map", input_map, 0.0, 1.0)
+        assert_in_range("lds_map", lds_map, 0.0, 1.0)
+        assert_in_range("output_map", output_map, 0.0, 1.0)
         assert_in_range("accept", adlo[0], 0.0, 1.0)
         assert_in_range("loc-x", adlo[1], -0.5, 0.5)
         assert_in_range("loc-y", adlo[2], -0.5, 0.5)
         assert_in_range("orientation", adlo[3], -1.0, 1.0)
+
+        assert_dtype("input_map", input_map, np.float32)
+        assert_dtype("lds_map", lds_map, np.float32)
+        assert_dtype("output_map", output_map, np.float32)
+        assert_dtype("adlo", adlo, np.float32)
+        assert_dtype("metadata", metadata, np.float32)
+
         count += 1
     print(f"Dataset tests passed ({count} entries verified)")
 
