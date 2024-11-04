@@ -1176,7 +1176,6 @@ def show_prediction(input_map, lds_map, map_true, adlo, map_pred, adlo_pred, **k
             plt.scatter(centre[0], centre[1], c='k', s=50)
             plt.scatter(error_loc[0], error_loc[1], c='m', s=50)
 
-
     if lds_map is not None:
         plt.subplot(1, cols, next(i))
         plt.title('LDS')
