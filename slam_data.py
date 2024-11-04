@@ -150,29 +150,26 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
             loc_error = (0.0, 0.0)
             angle_error = 0.0
 
+            # Agent true location: on floor
+            # - facing any angle
+            agent_location = random_floor_location(semantic_map, map_range_low, map_range_high)
+            agent_angle = np.random.uniform(-np.pi, np.pi)
+
             if sample_type == 0:
                 # New map, unknown location and orientation, loc/angle error disregarded
                 # - blank input map, populated LDS map
                 # - populated output map, A=accept, DLO=zeros
 
-                # Agent true location: on floor
-                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
-                true_angle = np.random.uniform(-np.pi, np.pi)
-
                 # Map location = Estimated location: unknown
                 map_location, map_angle = None, None
 
                 input_map, lds_map, output_map, _ = generate_training_data_sample(
-                    semantic_map, true_loc, true_angle, False, True, None, None, **kwargs)
+                    semantic_map, agent_location, agent_angle, False, True, None, None, **kwargs)
 
             elif sample_type == 1:
                 # Known map, known location/angle estimation with small normal error
                 # - populated input map, populated LDS map
                 # - populated output map, A=accept, DLO=accurate low non-zero
-
-                # Agent true location: on floor
-                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
-                true_angle = np.random.uniform(-np.pi, np.pi)
 
                 # Map location = Estimated location: small normal error from agent location
                 # - allowed to be an illegal position
@@ -182,8 +179,8 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 angle_error = np.random.uniform(0, np.pi * 0.1)
                 loc_error = np.clip(loc_error, -window_range / 2, +window_range / 2)
                 angle_error = np.clip(angle_error, -np.pi, +np.pi)
-                map_location = true_loc - loc_error
-                map_angle = true_angle - angle_error
+                map_location = agent_location - loc_error
+                map_angle = agent_angle - angle_error
 
                 input_map, lds_map, output_map, _ = generate_training_data_sample(
                     semantic_map, map_location, map_angle, True, True, loc_error, angle_error, **kwargs)
@@ -194,18 +191,14 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 # - populated input map, populated LDS map
                 # - blank output map, A=accept, DLO=approximate high non-zero
 
-                # Agent true location: on floor
-                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
-                true_angle = np.random.uniform(-np.pi, np.pi)
-
                 # Map location: independent uniform random location WITHIN window distance
                 # - allowed to be in illegal position
                 # - loc_error - uniform either side of zero, anywhere within window
                 # - angle_error - uniform anywhere within 360-degree range
                 loc_error = np.random.uniform(-window_range / 2, +window_range / 2)
                 angle_error = np.random.uniform(-np.pi, np.pi)
-                map_location = true_loc - loc_error
-                map_angle = true_angle - angle_error
+                map_location = agent_location - loc_error
+                map_angle = agent_angle - angle_error
 
                 input_map, lds_map, output_map, _ = generate_training_data_sample(
                     semantic_map, map_location, map_angle, True, False, loc_error, angle_error, **kwargs)
@@ -216,26 +209,22 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 # - populated input map, populated LDS map
                 # - blank output map, A=reject, DLO=zero, but don't care
 
-                # Agent true location: on floor
-                true_loc = random_floor_location(semantic_map, map_range_low, map_range_high)
-                true_angle = np.random.uniform(-np.pi, np.pi)
-
                 # Map location: independent uniform random location OUTSIDE window distance
                 # - allowed to be in illegal position
                 # - location - at most only 1/4th of diameter of LDS circles will overlap
                 # - angle - uniform anywhere within 360-degree range
                 min_distance = max_distance * 1.5
                 map_location = None
-                while map_location is None or np.linalg.norm(map_location - true_loc) < min_distance:
+                while map_location is None or np.linalg.norm(map_location - agent_location) < min_distance:
                     map_location = np.random.uniform(map_range_low, map_range_high)
                 map_angle = np.random.uniform(-np.pi, np.pi)
-                loc_error = true_loc - map_location
-                angle_error = true_angle - map_angle
+                loc_error = agent_location - map_location
+                angle_error = agent_angle - map_angle
 
                 input_map, _, _, _ = generate_training_data_sample(
                     semantic_map, map_location, map_angle, True, False, loc_error, angle_error, **kwargs)
                 _, lds_map, output_map, _ = generate_training_data_sample(
-                    semantic_map, true_loc, true_angle, False, False, None, None, **kwargs)
+                    semantic_map, agent_location, agent_angle, False, False, None, None, **kwargs)
 
                 # for expected NN outputs
                 # (error should be ignored by loss function, but if we do let it train on these values then we'd
@@ -259,10 +248,10 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 ])
                 metadata = {
                     'sample_type': sample_type,
-                    'true_location': true_loc,
-                    'true_orientation': true_angle,
-                    'estimated_location': map_location,
-                    'estimated_orientation': map_angle
+                    'agent_location': agent_location,
+                    'agent_orientation': agent_angle,
+                    'map_location': map_location,
+                    'map_orientation': map_angle
                 }
                 input_maps.append(input_map)
                 lds_maps.append(lds_map)
@@ -862,47 +851,71 @@ def _map_shape(map_or_shape: Any):
 
 
 def save_dataset(dataset, file):
+    """
+    Saves the dataset to the designated file, overwriting any existing file.
+
+    Saves via Numpy format because I had problems with the TF Dataset's own saving format.
+    1. It saves to a folder structure, which makes downloading it cumbersome.
+    2. I had problems with it looking like it'd saved, but it actually produced an empty
+       collection.
+
+    :param dataset: A dataset returned by generate_training_data()
+    :param file: file to save to
+    """
+
     # Iterate through the dataset and collect the data
     input_maps = []
     lds_maps = []
-    ground_truth_maps = []
+    output_maps = []
     adlos = []
-    for (inputs, outputs) in dataset:
-        input_maps.append(inputs[0].numpy())
-        lds_maps.append(inputs[1].numpy())
-        ground_truth_maps.append(outputs[0].numpy())
-        adlos.append(outputs[1].numpy())
+    metadatas = []
+    for (input_map, lds_map), (output_map, adlo), metadata in dataset:
+        input_maps.append(input_map.numpy())
+        lds_maps.append(lds_map.numpy())
+        output_maps.append(output_map.numpy())
+        adlos.append(adlo.numpy())
+        metadatas.append(metadata.numpy())
 
     print(f"Saving:")
-    print(f"  input_maps:        {np.shape(input_maps)}")
-    print(f"  lds_maps:          {np.shape(lds_maps)}")
-    print(f"  ground_truth_maps: {np.shape(ground_truth_maps)}")
-    print(f"  adlos:             {np.shape(adlos)}")
+    print(f"  input_maps:  {np.shape(input_maps)}")
+    print(f"  lds_maps:    {np.shape(lds_maps)}")
+    print(f"  output_maps: {np.shape(output_maps)}")
+    print(f"  adlos:       {np.shape(adlos)}")
+    print(f"  metadatas:   {np.shape(metadatas)}")
 
     np.savez_compressed(file,
                         input_maps=np.array(input_maps),
                         ld_maps=np.array(lds_maps),
-                        ground_truth_maps=np.array(ground_truth_maps),
-                        adlos=np.array(adlos))
+                        output_maps=np.array(output_maps),
+                        adlos=np.array(adlos),
+                        metadatas=np.array(metadatas))
     print(f"Dataset saved to {file}")
 
 
 def load_dataset(file):
+    """
+    Loads a dataset saved by save_dataset().
+    :param file: The file to load from
+    :return: tf.data.Dataset
+    """
     data = np.load(file)
     input_maps = data['input_maps']
     lds_maps = data['ld_maps']
-    ground_truth_maps = data['ground_truth_maps']
+    output_maps = data['output_maps'] or data['ground_truth_maps']
     adlos = data['adlos']
+    metadatas = data['metadatas'] or None
 
     print(f"Loaded:")
-    print(f"  input_maps:        {np.shape(input_maps)}")
-    print(f"  lds_maps:          {np.shape(lds_maps)}")
-    print(f"  ground_truth_maps: {np.shape(ground_truth_maps)}")
-    print(f"  adlos:             {np.shape(adlos)}")
+    print(f"  input_maps:  {np.shape(input_maps)}")
+    print(f"  lds_maps:    {np.shape(lds_maps)}")
+    print(f"  output_maps: {np.shape(output_maps)}")
+    print(f"  adlos:       {np.shape(adlos)}")
+    print(f"  metadatas:   {np.shape(metadatas)}")
 
     dataset = tf.data.Dataset.from_tensor_slices((
         (input_maps, lds_maps),
-        (ground_truth_maps, adlos)
+        (output_maps, adlos),
+        metadatas
     ))
     print(f"Dataset loaded from {file}")
     return dataset
@@ -910,7 +923,7 @@ def load_dataset(file):
 
 def validate_dataset(dataset):
     """
-    Sanity checks generated data.
+    Sanity checks generated data against some basic rules.
     :param dataset:
     """
     def assert_in_range(name, tensor, allowed_min, allowed_max):
@@ -918,7 +931,7 @@ def validate_dataset(dataset):
             raise ValueError(f"{name} has values outside of desired range, found: {np.min(tensor)}-{np.max(tensor)}")
 
     count = 0
-    for (input_map, lds_map), (ground_truth_map, adlo) in dataset:
+    for (input_map, lds_map), (output_map, adlo), metadatas in dataset:
         assert_in_range("input_map", input_map, 0.0, 1.0)
         assert_in_range("lds_map", input_map, 0.0, 1.0)
         assert_in_range("ground_truth_map", input_map, 0.0, 1.0)
@@ -931,21 +944,22 @@ def validate_dataset(dataset):
 
 
 def show_dataset(dataset, num=5):
-    for (input_map, lds_map), (ground_truth_map, adlo) in dataset.take(num):
-        show_data_sample(input_map, lds_map, ground_truth_map, adlo)
+    for (input_map, lds_map), (output_map, adlo), metadata in dataset.take(num):
+        show_data_sample(input_map, lds_map, output_map, adlo, metadata)
 
 
-def show_data_sample(input_map, lds_map, ground_truth_map, adlo):
-    print(f"input_map:        {input_map.shape}")
-    print(f"lds_map:          {lds_map.shape}")
-    print(f"ground_truth_map: {ground_truth_map.shape}")
-    print(f"adlo:             {adlo}")
+def show_data_sample(input_map, lds_map, output_map, adlo, metadata=None):
+    print(f"input_map:  {input_map.shape}")
+    print(f"lds_map:    {lds_map.shape}")
+    print(f"output_map: {output_map.shape}")
+    print(f"adlo:       {adlo}")
+    print(f"metadata:   {metadata}")
 
     map_size = np.array([input_map.shape[1], input_map.shape[0]])
 
     plt.figure(figsize=(10, 2))
     plt.subplot(1, 3, 1)
-    plt.title('Map')
+    plt.title('Input Map')
     plt.imshow(input_map)
     plt.axis('off')
     if not adlo[0]:
@@ -967,8 +981,8 @@ def show_data_sample(input_map, lds_map, ground_truth_map, adlo):
     plt.axis('off')
 
     plt.subplot(1, 3, 3)
-    plt.title('Ground Truth')
-    plt.imshow(ground_truth_map, cmap='gray')
+    plt.title('Output Map')
+    plt.imshow(output_map, cmap='gray')
     plt.axis('off')
     plt.show()
 
@@ -989,7 +1003,7 @@ def show_predictions(model, dataset, num=5, **kwargs):
     if flexi:
         flexi_show_predictions(model, dataset, num, **kwargs)
     else:
-        inputs, outputs = next(iter(dataset.batch(num)))
+        inputs, outputs, metadatas = next(iter(dataset.batch(num)))
         preds = model.predict(inputs)
         for map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred in zip(
                 inputs[0], inputs[1], outputs[0], outputs[1], preds[0], preds[1]):
