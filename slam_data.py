@@ -8,7 +8,7 @@
 #   lds_maps      - input occupancy map from LDS (B,H,W)
 #   output_maps   - output semantic map, blank if don't care
 #   adlos         - output ADLO
-#   metadatas     - dict, must be removed before training but used elsewhere
+#   metadatas     - array, must be removed before training but is used elsewhere
 #
 # Semantic maps are encoded as follows:
 #  - shape: (H,W,C)
@@ -21,12 +21,23 @@
 #
 # ADLO is encoded as follows:
 #  - shape: (4,)
+#  - type: float
 #  - [0]: accept: logit/sigmoid - likelihood that the agent is present within the map, based on the LDS data
 #  - [1]: delta x: -0.5 .. +0.5 - percentage of window width to add to current estimated x-location
 #  - [2]: delta y: -0.5 .. +0.5 - percentage of window width to add to current estimated y-location
 #  - [3]: delta angle: -1.0 .. +1.0 - fraction of pi (+/-) to add to current estimated orientation
 #  - DLO values ignored when accept=false
 #  - DLO values all zero when processing a blank input map and accepting the LDS map.
+#
+# The metadata array is encoded as follows:
+#  - shape: (6,)
+#  - type: float
+#  - [0]: floorplan id - round to nearest int when using
+#  - [1]: sample type - round to nearest int when using
+#  - [2]: input map centre location (x,y), float, units: physical
+#  - [3]: input map orientation, unit: radians
+#  - [4]: agent location (x,y), float, units: physical
+#  - [5]: agent orientation, unit: radians
 
 import lds
 import map_from_lds_train_data
@@ -139,6 +150,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     lds_maps = []
     output_maps = []
     adlos = []
+    sample_types = []
     metadatas = []
     attempts = 0
     for _ in tqdm.tqdm(range(num_samples)):
@@ -246,13 +258,14 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                     loc_error[1] / window_range[1],  # convert to range: -0.5 .. +0.5
                     angle_error / np.pi  # convert to range: -1.0 .. +1.0
                 ])
-                metadata = {
-                    'sample_type': sample_type,
-                    'agent_location': agent_location,
-                    'agent_orientation': agent_angle,
-                    'map_location': map_location,
-                    'map_orientation': map_angle
-                }
+                metadata = np.array([
+                    2.0,  # always static floorplan Id for now
+                    sample_type,
+                    map_location,
+                    map_angle,
+                    agent_location,
+                    agent_angle
+                ])
                 input_maps.append(input_map)
                 lds_maps.append(lds_map)
                 output_maps.append(output_map)
@@ -895,6 +908,9 @@ def save_dataset(dataset, file):
 def load_dataset(file):
     """
     Loads a dataset saved by save_dataset().
+
+    Handles that some older datasets used 'ground_truth_maps' instead of 'output_maps'
+    and omitted 'metadatas'
     :param file: The file to load from
     :return: tf.data.Dataset
     """
@@ -903,7 +919,7 @@ def load_dataset(file):
     lds_maps = data['ld_maps']
     output_maps = data['output_maps'] or data['ground_truth_maps']
     adlos = data['adlos']
-    metadatas = data['metadatas'] or None
+    metadatas = data['metadatas'] or np.zeros((input_maps.shape[0], 6))
 
     print(f"Loaded:")
     print(f"  input_maps:  {np.shape(input_maps)}")
@@ -1003,7 +1019,7 @@ def show_predictions(model, dataset, num=5, **kwargs):
     if flexi:
         flexi_show_predictions(model, dataset, num, **kwargs)
     else:
-        inputs, outputs, metadatas = next(iter(dataset.batch(num)))
+        inputs, outputs, _ = next(iter(dataset.batch(num)))
         preds = model.predict(inputs)
         for map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred in zip(
                 inputs[0], inputs[1], outputs[0], outputs[1], preds[0], preds[1]):
@@ -1030,42 +1046,42 @@ def flexi_show_predictions(model, dataset, num=1, **kwargs):
     print(f"preds:    {type(preds)} x {len(preds)}, {np.shape(preds)}")
 
     if isinstance(batch[0], tuple):
-        map_inputs = batch[0][0]
-        lds_inputs = batch[0][1] if len(batch[0]) >= 2 else None
+        input_maps = batch[0][0]
+        lds_maps = batch[0][1] if len(batch[0]) >= 2 else None
     else:
-        map_inputs = batch[0]
-        lds_inputs = [None] * len(map_inputs)
+        input_maps = batch[0]
+        lds_maps = [None] * len(input_maps)
 
     if isinstance(batch[1], tuple):
-        ground_truth_maps = batch[1][0]
-        adlos = batch[1][1] if len(batch[1]) >= 2 else None
+        output_map_trues = batch[1][0]
+        adlo_trues = batch[1][1] if len(batch[1]) >= 2 else None
     else:
-        ground_truth_maps = batch[1]
-        adlos = [None] * len(ground_truth_maps)
+        output_map_trues = batch[1]
+        adlo_trues = [None] * len(output_map_trues)
 
     if isinstance(preds, tuple):
-        map_preds = preds[0]
+        output_map_preds = preds[0]
         adlo_preds = preds[1] if len(preds) >= 2 else None
     else:
-        map_preds = preds
-        adlo_preds = [None] * len(map_preds)
+        output_map_preds = preds
+        adlo_preds = [None] * len(output_map_preds)
 
-    for map_input, lds_input, ground_truth_map, adlo, map_pred, adlo_pred in zip(
-            map_inputs, lds_inputs, ground_truth_maps, adlos, map_preds,adlo_preds):
-        print(f"map_input: {np.shape(map_input)}")
-        print(f"lds_input: {np.shape(lds_input)}")
-        print(f"ground_truth_map: {np.shape(ground_truth_map)}")
-        print(f"adlo: {np.shape(adlo)}")
-        print(f"map_pred: {np.shape(map_pred)}")
+    for input_map, lds_map, output_map_true, adlo, map_pred, adlo_pred in zip(
+            input_maps, lds_maps, output_map_trues, adlo_trues, output_map_preds, adlo_preds):
+        print(f"map_input: {np.shape(input_map)}")
+        print(f"lds_input: {np.shape(lds_map)}")
+        print(f"output_map_true: {np.shape(output_map_true)}")
+        print(f"adlo_true: {np.shape(adlo)}")
+        print(f"output_map_pred: {np.shape(map_pred)}")
         print(f"adlo_pred: {np.shape(adlo_pred)}")
-        show_prediction(map_input, lds_input, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs)
+        show_prediction(input_map, lds_map, output_map_true, adlo, map_pred, adlo_pred, **kwargs)
 
 
-def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs):
+def show_prediction(input_map, lds_map, map_true, adlo, map_pred, adlo_pred, **kwargs):
     """
-    :param map_window:
+    :param input_map:
     :param lds_map:
-    :param ground_truth_map:
+    :param map_true:
     :param adlo:
     :param map_pred:
     :param adlo_pred:
@@ -1075,8 +1091,8 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     """
     from_logits = kwargs.get('from_logits', True)
     show_classes = kwargs.get('show_classes', 'none')
-    map_size = np.array([map_window.shape[1], map_window.shape[0]])
-    n_classes = map_window.shape[-1]
+    map_size = np.array([input_map.shape[1], input_map.shape[0]])
+    n_classes = input_map.shape[-1]
 
     if show_classes == True:
         show_classes = 'all'
@@ -1099,11 +1115,11 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
 
     # Calculate total number of plots to display
     cols = 0
-    cols = cols + (1 if map_window is not None else 0)
+    cols = cols + (1 if input_map is not None else 0)
     cols = cols + (1 if lds_map is not None else 0)
-    cols = cols + (1 if map_window is not None else 0)
-    cols = cols + (1 if ground_truth_map is not None else 0)
-    cols = cols + (n_classes if ground_truth_map is not None and show_classes else 0)
+    cols = cols + (1 if input_map is not None else 0)
+    cols = cols + (1 if map_true is not None else 0)
+    cols = cols + (n_classes if map_true is not None and show_classes else 0)
     cols = cols + (1 if map_pred_categorical is not None else 0)
     cols = cols + (n_classes if map_pred_scaled is not None and show_classes else 0)
 
@@ -1111,10 +1127,10 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
     plt.figure(figsize=(20, 2))  # limits by row height
     i = iter(range(1, cols+1))
 
-    if map_window is not None:
+    if input_map is not None:
         plt.subplot(1, cols, next(i))
         plt.title('Map')
-        plt.imshow(map_window)
+        plt.imshow(input_map)
         plt.axis('off')
         if adlo is not None and not adlo[0]:
             # to be rejected so just add cross through map
@@ -1136,17 +1152,17 @@ def show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_
         plt.imshow(lds_map, cmap='gray')
         plt.axis('off')
 
-    if ground_truth_map is not None:
+    if map_true is not None:
         plt.subplot(1, cols, next(i))
         plt.title('Ground Truth')
-        plt.imshow(ground_truth_map)
+        plt.imshow(map_true)
         plt.axis('off')
 
-    if ground_truth_map is not None and show_classes == 'all':
+    if map_true is not None and show_classes == 'all':
         for channel in range(n_classes):
             plt.subplot(1, cols, next(i))
             plt.title(f"Truth:{channel}")
-            plt.imshow(ground_truth_map[..., channel], cmap='gray')
+            plt.imshow(map_true[..., channel], cmap='gray')
             plt.axis('off')
 
     if map_pred_categorical is not None:
