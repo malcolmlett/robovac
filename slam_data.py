@@ -40,6 +40,7 @@
 #  - [5]: agent x, float, units: physical
 #  - [6]: agent y, float, units: physical
 #  - [7]: agent orientation, unit: radians
+from scipy.stats import gennorm_gen
 
 import lds
 import map_from_lds_train_data
@@ -102,16 +103,24 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
         sample_types: int, tuple, list or array
             Collection of sample types to generate from.
             Allowed values include: 0, 1, 2, 3.
+        mask_output_map_by_sample_type: bool, default: False
+            Whether to blank out the ground-truth output map for sample types
+            where the output map is not important for robovac operation.
+            Specifically, sample types 3 and 4 are about locating the agent,
+            not about converting from LDS to semantic map. With this option false,
+            training uses those samples to additionally train the LDS-to-semantic map
+            network. In practice, I've found that applying masking slows down training
+            as there's less gradient information per training batch.
         model: default None
-          Model to use for generating input maps.
+            Model to use for generating input maps.
         predicted_samples: tuple (locations, semantic_maps).
-          Pre-generated samples of semantic map predictions across the full map.
-          Provide at-most one of this or 'model'.
+            Pre-generated samples of semantic map predictions across the full map.
+            Provide at-most one of this or 'model'.
         model_weight: float in range 0.0 to 1.0 (inclusive).
-          Default: 1.0 if model is present, 0.0 otherwise.
-          If provided, the generated input maps will be a weighted average
-          between samples taken directly from the floorplan and maps
-          predicted by the model.
+            Default: 1.0 if model is present, 0.0 otherwise.
+            If provided, the generated input maps will be a weighted average
+            between samples taken directly from the floorplan and maps
+            predicted by the model.
     Returns:
          Dataset ((input_maps, lds_maps), (output_maps, adlos), metadatas)
     """
@@ -121,6 +130,7 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
     sample_types = np.array(kwargs.get('sample_types', range(tot_sample_types)))
     sample_types = np.ravel(np.array(sample_types))  # cleanup type variations
+    mask_output_map_by_sample_type = kwargs.get('mask_output_map_by_sample_type', False)
     model = kwargs.get('model', None)
     model_weight = kwargs.get('model_weight', 1.0 if model is not None else 0.0)
     predicted_sample_locs, predicted_sample_maps = kwargs.get('predicted_samples', (None, None))
@@ -200,9 +210,8 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
 
             elif sample_type == 2:
                 # Known map, location unknown and searching, with LDS data partially on this map window.
-                # Location of map window independent of LDS data
                 # - populated input map, populated LDS map
-                # - blank output map, A=accept, DLO=approximate high non-zero
+                # - populated or blank output map, A=accept, DLO=approximate high non-zero
 
                 # Map location: independent uniform random location WITHIN window distance
                 # - allowed to be in illegal position
@@ -213,14 +222,15 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 map_location = agent_location - loc_error
                 map_angle = agent_angle - angle_error
 
+                gen_output_map = not mask_output_map_by_sample_type
                 input_map, lds_map, output_map, _ = generate_training_data_sample(
-                    semantic_map, map_location, map_angle, True, False, loc_error, angle_error, **kwargs)
+                    semantic_map, map_location, map_angle, True, gen_output_map, loc_error, angle_error, **kwargs)
 
             elif sample_type == 3:
                 # Known map, location unknown and searching, with LDS not on this map window.
                 # LDS and map explicitly in different parts of the floor (max 1/4th overlap between LDS circles)
                 # - populated input map, populated LDS map
-                # - blank output map, A=reject, DLO=zero, but don't care
+                # - populated or blank output map, A=reject, DLO=zero, but don't care
 
                 # Map location: independent uniform random location OUTSIDE window distance
                 # - allowed to be in illegal position
@@ -234,10 +244,11 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
                 loc_error = agent_location - map_location
                 angle_error = agent_angle - map_angle
 
+                gen_output_map = not mask_output_map_by_sample_type
                 input_map, _, _, _ = generate_training_data_sample(
                     semantic_map, map_location, map_angle, True, False, loc_error, angle_error, **kwargs)
                 _, lds_map, output_map, _ = generate_training_data_sample(
-                    semantic_map, agent_location, agent_angle, False, False, None, None, **kwargs)
+                    semantic_map, agent_location, agent_angle, False, gen_output_map, None, None, **kwargs)
 
                 # for expected NN outputs
                 # (error should be ignored by loss function, but if we do let it train on these values then we'd
