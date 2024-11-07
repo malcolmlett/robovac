@@ -101,6 +101,10 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
       output_logits: bool, default: True
         Whether to output logits where appropriate, or scaled otherwise.
         The values for delta x/y/orientation are always in scaled form.
+      compile: bool, default: False
+        Whether to also compile the model with standard optimizer, loss, and metrics.
+      verbose_history: bool, default: False
+        Whether to include extra metrics that break-down for the invividual components of the output.
 
     Returns:
       model -- tf.keras.Model
@@ -108,10 +112,11 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
 
     merge_mode = kwargs.get('merge_mode', 'concat')
     output_logits = kwargs.get('output_logits', True)
+    compile = kwargs.get('compile', False)
 
     # Sanity check
     if np.size(map_shape) != 3:
-      raise ValueError("Map shape must have 3 dims, found {np.size(map_shape)}")
+        raise ValueError("Map shape must have 3 dims, found {np.size(map_shape)}")
 
     # Prepare map input
     # (pad so it's a multiple of our down/up-scaling blocks)
@@ -177,29 +182,51 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
 
     model = tf.keras.Model(inputs=[map_input, lds_input], outputs=[map_out, adlo_out])
 
+    if compile:
+        compile_model(model, **kwargs)
+
     print(f"Prepared SLAM model")
     print(f"  Map shape:        {map_shape} + padding ({pad_h}, {pad_w}, 0)")
     print(f"  Skip-connections: {merge_mode}")
     print(f"  Output scaling:   {'logits' if output_logits else 'scaled'}")
     print(f"  Inputs:           {model.inputs}")
     print(f"  Outputs:          {model.outputs}")
+    print(f"  Compiled:         {compile}")
     return model
 
 
-def pad_block(input, input_size):
+def compile_model(model, **kwargs):
     """
-    Works out if padding is required and applies it if needed.
-    :param input: Input image or map tensor (B,H,W,...)
-    :param input_size: size of input (H,W,...)
-    :return: padded input (B,H+pad_h,W+pad_w,...), total padded width, total padded height
+    Compiles the model according to configuration that has proven to work well.
+    Args:
+      model:
+        A model returned by slam_model()
+    Keyword args:
+      output_logits: bool, default: True
+        Whether outputting logits where appropriate, or scaled otherwise.
+      verbose_history: bool, default: False
+        Whether to include extra metrics that break-down for the individual components of the output.
     """
-    pad_h = 16 - input_size[0] % 16
-    pad_w = 16 - input_size[1] % 16
-    if pad_h > 0 or pad_w > 0:
-        padded_input = ZeroPadding2D(padding=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(input)
+    output_logits = kwargs.get('output_logits', True)
+    verbose_history = kwargs.get('verbose_history', False)
+
+    if verbose_history:
+        model.compile(optimizer='adam',
+                      loss={
+                          'map_output': MapLoss(from_logits=output_logits),
+                          'adlo_output': ADLOLoss(from_logits=output_logits)
+                      },
+                      metrics={
+                          'map_output': [MapLoss(from_logits=output_logits), 'accuracy'],
+                          'adlo_output': [ADLOLoss(from_logits=output_logits), AcceptAccuracy(), LocationError(),
+                                          OrientationError()]
+                      })
     else:
-        padded_input = input
-    return padded_input, pad_w, pad_h
+        model.compile(optimizer='adam',
+                      loss={
+                          'map_output': MapLoss(from_logits=output_logits),
+                          'adlo_output': ADLOLoss(from_logits=output_logits)
+                      })
 
 
 def slam_down_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
@@ -335,8 +362,36 @@ def adlo_block(input, n_units, output_logits):
     return output
 
 
+def pad_block(x, input_size):
+    """
+    Works out if padding is required and applies it if needed.
+    Args:
+      x: image or map tensor (B,H,W,...)
+      input_size: size of input (H,W,...)
+    Returns:
+      padded tensor (B,H+pad_h,W+pad_w,...), total padded width, total padded height
+    """
+    pad_h = 16 - input_size[0] % 16
+    pad_w = 16 - input_size[1] % 16
+    if pad_h > 0 or pad_w > 0:
+        padded = ZeroPadding2D(padding=((pad_h//2, pad_h-pad_h//2), (pad_w//2, pad_w-pad_w//2)))(x)
+    else:
+        padded = x
+    return padded, pad_w, pad_h
+
+
 class ADLOActivation(tf.keras.layers.Layer):
+    """
+    Applies activation functions against each component of the ADLO output tensor.
+    """
+
     def __init__(self, output_logits=True, name=None, **kwargs):
+        """
+        Args:
+          output_logits: bool
+            Whether to output raw logits for the 'accept' component, or to applied sigmoid activation function.
+            Ignored for DLO components.
+        """
         super(ADLOActivation, self).__init__(name=name, **kwargs)
         self._output_logits = output_logits
 
@@ -351,22 +406,59 @@ class ADLOActivation(tf.keras.layers.Layer):
         return tf.stack([accept, delta_x, delta_y, delta_angle], axis=1)
 
 
+class MapLoss(tf.keras.losses.Loss):
+    """
+    Custom variant of a CategoricalCrossEntropyLoss that omits samples from the loss calculation
+    where there is no ground-truth map output.
+    """
+    def __init__(self, name="map_loss", from_logits=True, reduction="some_over_batch_size"):
+        """
+        Args:
+          from_logits: bool, must be supplied the same as when constructing the model.
+          reduction:
+        """
+        super(MapLoss, self).__init__(name=name, reduction=reduction)
+        self._from_logits = from_logits
+
+    @tf.function
+    def call(self, y_true, y_pred):
+        # Compute mask - ignore samples where ground-truth output map is blank
+        sample_min = tf.reduce_min(y_true, axis=-1)
+        sample_max = tf.reduce_max(y_true, axis=-1)
+        mask = tf.cast(tf.not_equal(sample_min, sample_max), y_pred.dtype)
+
+        loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred, from_logits=self._from_logits)
+        loss = loss * mask
+
+        return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-8)
+
+    def get_config(self):
+        config = super(MapLoss, self).get_config()
+        config.update({
+            "from_logits": self._from_logits
+        })
+        return config
+
+
 class ADLOLoss(tf.keras.losses.Loss):
     """
     Custom loss for ADLO output.
     By default, assumes output_logits=True in model.
 
     Assumes:
-        y_true: (B,4), scaled
-        y_pred: (B,4), accept part logit or scaled, and DLO parts scaled always
+      y_true: (B,4), scaled
+      y_pred: (B,4), accept part logit or scaled, and DLO parts scaled always
     """
     def __init__(self, name="adlo_loss", from_logits=True, reduction=None):
         """
-        :param reduction: ignored. Required for deserialization.
+        Args:
+          from_logits: bool, must be supplied the same as for ADLOActivation.
+          reduction: ignored. Required for deserialization.
         """
         super(ADLOLoss, self).__init__(name=name)
         self._from_logits = from_logits
 
+    @tf.function
     def call(self, y_true, y_pred):
         y_true = tf.cast(y_true, tf.float32)
 
@@ -389,6 +481,7 @@ class ADLOLoss(tf.keras.losses.Loss):
         })
         return config
 
+
 class AcceptAccuracy(tf.keras.metrics.Metric):
     """
     Metric function against the ADLO 'accept' output.
@@ -398,10 +491,10 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
     and discretizing.
 
     Assumes:
-        y_true: (B,4), scaled
-        y_pred: (B,4), logits or scaled
+      y_true: (B,4), scaled
+      y_pred: (B,4), logits or scaled
     Returns:
-        metric scalar 0.0 .. 1.0
+      metric scalar 0.0 .. 1.0
     """
     def __init__(self, name="accept_accuracy", from_logits=True, **kwargs):
         super(AcceptAccuracy, self).__init__(name=name, **kwargs)
@@ -409,6 +502,7 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
         self.correct = self.add_weight(name="correct", initializer="zeros")
         self._from_logits = from_logits
 
+    @tf.function
     def update_state(self, y_true, y_pred, sample_weight=None):
         accept_true = tf.cast(y_true[:, 0], tf.float32)
         if self._from_logits:
@@ -425,6 +519,7 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
         self.correct.assign_add(tf.reduce_sum(matches))
         self.total.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
 
+    @tf.function
     def result(self):
         return self.correct / self.total
 
@@ -439,16 +534,17 @@ class LocationError(tf.keras.metrics.Metric):
     Computes the RMS error on the 'delta location' coordinate.
 
     Assumes:
-        y_true: (B,4), scaled
-        y_pred: (B,4), with DL parts scaled (always)
+      y_true: (B,4), scaled
+      y_pred: (B,4), with DL parts scaled (always)
     Returns:
-        metric scalar 0.0 .. ~0.5
+      metric scalar 0.0 .. ~0.5
     """
     def __init__(self, name="loc_error", **kwargs):
         super(LocationError, self).__init__(name=name, **kwargs)
         self.total_error = self.add_weight(name="total_error", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
 
+    @tf.function
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
         loc_true = y_true[:, 1:3]  # -0.5 .. +0.5
@@ -462,6 +558,7 @@ class LocationError(tf.keras.metrics.Metric):
         self.total_error.assign_add(tf.reduce_sum(losses))
         self.count.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
 
+    @tf.function
     def result(self):
         return self.total_error / self.count
 
@@ -477,16 +574,17 @@ class OrientationError(tf.keras.metrics.Metric):
     Computes the RMS error on the 'delta orientation' value.
 
     Assumes:
-        y_true: (B,4), scaled
-        y_pred: (B,4), with DO part scaled (always)
+      y_true: (B,4), scaled
+      y_pred: (B,4), with DO part scaled (always)
     Returns:
-        metric scalar 0.0 .. ~1.0
+      metric scalar 0.0 .. ~1.0
     """
     def __init__(self, name="orientation_error", **kwargs):
         super(OrientationError, self).__init__(name=name, **kwargs)
         self.total_error = self.add_weight(name="total_error", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
 
+    @tf.function
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
         angle_true = y_true[:, 3]  # -1.0 .. +1.0
@@ -500,6 +598,7 @@ class OrientationError(tf.keras.metrics.Metric):
         self.total_error.assign_add(tf.reduce_sum(losses))
         self.count.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
 
+    @tf.function
     def result(self):
         return self.total_error / self.count
 
