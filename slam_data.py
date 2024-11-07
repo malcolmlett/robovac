@@ -40,7 +40,6 @@
 #  - [5]: agent x, float, units: physical
 #  - [6]: agent y, float, units: physical
 #  - [7]: agent orientation, unit: radians
-from scipy.stats import gennorm_gen
 
 import lds
 import map_from_lds_train_data
