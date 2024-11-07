@@ -75,6 +75,12 @@ from tensorflow.keras.layers import Conv2DTranspose
 from tensorflow.keras.layers import Concatenate
 from tensorflow.keras.layers import Add
 
+# constants
+__CLASSES__ = 3
+__FLOOR_IDX__ = 0
+__OBSTRUCTION_IDX__ = 1
+__UNKNOWN_IDX__ = 2
+
 
 def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     """
@@ -411,7 +417,7 @@ class MapLoss(tf.keras.losses.Loss):
     Custom variant of a CategoricalCrossEntropyLoss that omits samples from the loss calculation
     where there is no ground-truth map output.
     """
-    def __init__(self, name="map_loss", from_logits=True, reduction="some_over_batch_size"):
+    def __init__(self, name="map_loss", from_logits=True, reduction="sum_over_batch_size"):
         """
         Args:
           from_logits: bool, must be supplied the same as when constructing the model.
@@ -423,14 +429,15 @@ class MapLoss(tf.keras.losses.Loss):
     @tf.function
     def call(self, y_true, y_pred):
         # Compute mask - ignore samples where ground-truth output map is blank
-        sample_min = tf.reduce_min(y_true, axis=-1)
-        sample_max = tf.reduce_max(y_true, axis=-1)
-        mask = tf.cast(tf.not_equal(sample_min, sample_max), y_pred.dtype)
+        unknown_true = y_true[..., __UNKNOWN_IDX__]  # shape: (B,H,W)
+        unknown_min = tf.reduce_min(unknown_true, axis=range(1, tf.rank(unknown_true)))
+        mask = tf.cast(tf.not_equal(unknown_min, 1.0), y_pred.dtype)  # shape: (B,)
 
         loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred, from_logits=self._from_logits)
+        loss = tf.reduce_mean(loss, axis=range(1, tf.rank(loss)))  # shape: (B,)
         loss = loss * mask
 
-        return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-8)
+        return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-8)  # shape: scalar
 
     def get_config(self):
         config = super(MapLoss, self).get_config()
@@ -463,20 +470,22 @@ class ADLOLoss(tf.keras.losses.Loss):
         y_true = tf.cast(y_true, tf.float32)
 
         # binary cross-entropy loss for accept
-        accept_true = y_true[:, 0]
-        accept_pred = y_pred[:, 0]
+        accept_true = y_true[:, 0]  # shape: (B,)
+        accept_pred = y_pred[:, 0]  # shape: (B,)
         accept_losses = tf.keras.losses.binary_crossentropy(accept_true, accept_pred, from_logits=self._from_logits)
-        # TODO check shape of accept_losses
+
+        # DLO mask - simply: include if accept_true, exclude otherwise
+        mask = accept_true
 
         # log-cosh loss for delta x, y, orientation
-        # - apply mask - ignore DLO if accept_true = 0
-        dlo_true = y_true[:, 1:4]
-        dlo_pred = y_pred[:, 1:4]
+        dlo_true = y_true[:, 1:4]  # shape: (B,3)
+        dlo_pred = y_pred[:, 1:4]  # shape: (B,3)
         dlo_losses = tf.math.log(tf.cosh(dlo_pred - dlo_true))
-        dlo_losses = dlo_losses * accept_true
-        dlo_losses = tf.reduce_sum(dlo_losses) / (tf.reduce_sum() + 1e-8)
+        dlo_losses = tf.reduce_sum(dlo_losses, axis=-1)  # shape: (B,)
+        dlo_losses = dlo_losses * mask
+        dlo_losses = tf.reduce_sum(dlo_losses) / (tf.reduce_sum(mask) + 1e-8)
 
-        return accept_losses + dlo_losses
+        return accept_losses + dlo_losses  # shape: scalar
 
     def get_config(self):
         config = super(ADLOLoss, self).get_config()
