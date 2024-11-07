@@ -1060,11 +1060,11 @@ def show_predictions(model, dataset, num=5, **kwargs):
     if flexi:
         flexi_show_predictions(model, dataset, num, **kwargs)
     else:
-        inputs, outputs, _ = next(iter(dataset.batch(num)))
+        inputs, outputs, metadatas = next(iter(dataset.batch(num)))
         preds = model.predict(inputs)
-        for map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred in zip(
-                inputs[0], inputs[1], outputs[0], outputs[1], preds[0], preds[1]):
-            show_prediction(map_window, lds_map, ground_truth_map, adlo, map_pred, adlo_pred, **kwargs)
+        for map_window, lds_map, ground_truth_map, adlo, metadata, map_pred, adlo_pred in zip(
+                inputs[0], inputs[1], outputs[0], outputs[1], metadatas, preds[0], preds[1]):
+            show_prediction(map_window, lds_map, ground_truth_map, adlo, metadata, map_pred, adlo_pred, **kwargs)
 
 
 def flexi_show_predictions(model, dataset, num=1, **kwargs):
@@ -1100,6 +1100,11 @@ def flexi_show_predictions(model, dataset, num=1, **kwargs):
         output_map_trues = batch[1]
         adlo_trues = [None] * len(output_map_trues)
 
+    if len(batch) >= 3:
+        metadatas = batch[2]
+    else:
+        metadatas = [None] * len(output_map_trues)
+
     if isinstance(preds, tuple):
         output_map_preds = preds[0]
         adlo_preds = preds[1] if len(preds) >= 2 else None
@@ -1107,23 +1112,24 @@ def flexi_show_predictions(model, dataset, num=1, **kwargs):
         output_map_preds = preds
         adlo_preds = [None] * len(output_map_preds)
 
-    for input_map, lds_map, output_map_true, adlo, map_pred, adlo_pred in zip(
-            input_maps, lds_maps, output_map_trues, adlo_trues, output_map_preds, adlo_preds):
+    for input_map, lds_map, output_map_true, adlo, metadata, map_pred, adlo_pred in zip(
+            input_maps, lds_maps, output_map_trues, adlo_trues, metadatas, output_map_preds, adlo_preds):
         print(f"map_input: {np.shape(input_map)}")
         print(f"lds_input: {np.shape(lds_map)}")
         print(f"output_map_true: {np.shape(output_map_true)}")
         print(f"adlo_true: {np.shape(adlo)}")
         print(f"output_map_pred: {np.shape(map_pred)}")
         print(f"adlo_pred: {np.shape(adlo_pred)}")
-        show_prediction(input_map, lds_map, output_map_true, adlo, map_pred, adlo_pred, **kwargs)
+        show_prediction(input_map, lds_map, output_map_true, adlo, metadata, map_pred, adlo_pred, **kwargs)
 
 
-def show_prediction(input_map, lds_map, map_true, adlo, map_pred, adlo_pred, **kwargs):
+def show_prediction(input_map, lds_map, map_true, adlo, metadata, map_pred, adlo_pred, **kwargs):
     """
     :param input_map:
     :param lds_map:
     :param map_true:
     :param adlo:
+    :param metadata:
     :param map_pred:
     :param adlo_pred:
 
@@ -1153,6 +1159,7 @@ def show_prediction(input_map, lds_map, map_true, adlo, map_pred, adlo_pred, **k
     print(f"adlo:             {adlo}")
     print(f"adlo-pred raw:    {adlo_pred}")
     print(f"adlo-pred scaled: {adlo_pred_scaled}")
+    print(f"metadata:         {metadata}")
 
     # Calculate total number of plots to display
     cols = 0
