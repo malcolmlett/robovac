@@ -466,11 +466,15 @@ class ADLOLoss(tf.keras.losses.Loss):
         accept_true = y_true[:, 0]
         accept_pred = y_pred[:, 0]
         accept_losses = tf.keras.losses.binary_crossentropy(accept_true, accept_pred, from_logits=self._from_logits)
+        # TODO check shape of accept_losses
 
         # log-cosh loss for delta x, y, orientation
+        # - apply mask - ignore DLO if accept_true = 0
         dlo_true = y_true[:, 1:4]
         dlo_pred = y_pred[:, 1:4]
-        dlo_losses = tf.reduce_mean(tf.math.log(tf.cosh(dlo_pred - dlo_true)))
+        dlo_losses = tf.math.log(tf.cosh(dlo_pred - dlo_true))
+        dlo_losses = dlo_losses * accept_true
+        dlo_losses = tf.reduce_sum(dlo_losses) / (tf.reduce_sum() + 1e-8)
 
         return accept_losses + dlo_losses
 
