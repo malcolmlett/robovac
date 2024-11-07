@@ -107,6 +107,8 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
       output_logits: bool, default: True
         Whether to output logits where appropriate, or scaled otherwise.
         The values for delta x/y/orientation are always in scaled form.
+      dlo_encoding: one of 'tanh/log-cosh', 'linear/linear', 'linear/importance', default: linear/importance.
+        Controls activation function and loss function.
       compile: bool, default: False
         Whether to also compile the model with standard optimizer, loss, and metrics.
       verbose_history: bool, default: False
@@ -118,7 +120,8 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
 
     merge_mode = kwargs.get('merge_mode', 'concat')
     output_logits = kwargs.get('output_logits', True)
-    compile = kwargs.get('compile', False)
+    do_compile = kwargs.get('compile', False)
+    dlo_encoding = kwargs.get('dlo_encoding', 'linear/importance')
 
     # Sanity check
     if np.size(map_shape) != 3:
@@ -184,11 +187,11 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
                              name='map_output')(map_out)
 
     # Accept and Delta location/orientation output
-    adlo_out = adlo_block(bottom, adlo_units, output_logits)
+    adlo_out = adlo_block(bottom, adlo_units, output_logits, dlo_encoding)
 
     model = tf.keras.Model(inputs=[map_input, lds_input], outputs=[map_out, adlo_out])
 
-    if compile:
+    if do_compile:
         compile_model(model, **kwargs)
 
     print(f"Prepared SLAM model")
@@ -197,7 +200,7 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     print(f"  Output scaling:   {'logits' if output_logits else 'scaled'}")
     print(f"  Inputs:           {model.inputs}")
     print(f"  Outputs:          {model.outputs}")
-    print(f"  Compiled:         {compile}")
+    print(f"  Compiled:         {do_compile}")
     return model
 
 
@@ -335,7 +338,7 @@ def slam_up_block(up_input, skip_input1, skip_input2, n_filters, **kwargs):
     return conv
 
 
-def adlo_block(input, n_units, output_logits):
+def adlo_block(input, n_units, output_logits, dlo_encoding):
     """
     Accept and Delta Location/Orientation block.
 
@@ -365,7 +368,7 @@ def adlo_block(input, n_units, output_logits):
 
     # Squish down into our output shape and apply final activations
     adlo = Dense(units=4)(adlo)
-    output = ADLOActivation(output_logits=output_logits, name='adlo_output')(adlo)
+    output = ADLOActivation(output_logits=output_logits, dlo_encoding=dlo_encoding, name='adlo_output')(adlo)
 
     return output
 
@@ -393,7 +396,7 @@ class ADLOActivation(tf.keras.layers.Layer):
     Applies activation functions against each component of the ADLO output tensor.
     """
 
-    def __init__(self, output_logits=True, name=None, **kwargs):
+    def __init__(self, output_logits=True, dlo_encoding='linear/importance', name=None, **kwargs):
         """
         Args:
           output_logits: bool
@@ -402,15 +405,25 @@ class ADLOActivation(tf.keras.layers.Layer):
         """
         super(ADLOActivation, self).__init__(name=name, **kwargs)
         self._output_logits = output_logits
+        self._dlo_encoding = dlo_encoding
 
     def call(self, inputs, *args, **kwargs):
         if self._output_logits:
             accept = inputs[:, 0]
         else:
             accept = tf.nn.sigmoid(inputs[:, 0])  # accept prob in range 0.0 .. 1.0
-        delta_x = tf.nn.tanh(inputs[:, 2]) * 0.5  # delta inputs in range -0.5 .. +0.5 (fraction of window size)
-        delta_y = tf.nn.tanh(inputs[:, 3]) * 0.5  # delta y in range -0.5 .. +0.5 (fraction of window size)
-        delta_angle = tf.nn.tanh(inputs[:, 1])    # delta angle in range -1.0 .. 1.0 (multiples of pi)
+
+        if self._dlo_encoding.startswith('tanh/'):
+            delta_x = tf.nn.tanh(inputs[:, 2]) * 0.5  # delta inputs in range -0.5 .. +0.5 (fraction of window size)
+            delta_y = tf.nn.tanh(inputs[:, 3]) * 0.5  # delta y in range -0.5 .. +0.5 (fraction of window size)
+            delta_angle = tf.nn.tanh(inputs[:, 1])    # delta angle in range -1.0 .. 1.0 (multiples of pi)
+        elif self._dlo_encoding.startswith('linear/'):
+            delta_x = inputs[:, 2] * 0.5  # delta inputs in range -0.5 .. +0.5 (fraction of window size)
+            delta_y = inputs[:, 3] * 0.5  # delta y in range -0.5 .. +0.5 (fraction of window size)
+            delta_angle = inputs[:, 1]  # delta angle in range -1.0 .. 1.0 (multiples of pi)
+        else:
+            raise ValueError(f"Unknown dlo encoding: {self._dlo_encoding}")
+
         return tf.stack([accept, delta_x, delta_y, delta_angle], axis=1)
 
 
@@ -461,7 +474,7 @@ class ADLOLoss(tf.keras.losses.Loss):
       y_true: (B,4), scaled
       y_pred: (B,4), accept part logit or scaled, and DLO parts scaled always
     """
-    def __init__(self, name="adlo_loss", from_logits=True, reduction=None):
+    def __init__(self, name="adlo_loss", from_logits=True, dlo_encoding='linear/importance', reduction=None):
         """
         Args:
           from_logits: bool, must be supplied the same as for ADLOActivation.
@@ -469,6 +482,7 @@ class ADLOLoss(tf.keras.losses.Loss):
         """
         super(ADLOLoss, self).__init__(name=name)
         self._from_logits = from_logits
+        self._dlo_encoding = dlo_encoding
 
     def call(self, y_true, y_pred):
         y_true = tf.cast(y_true, tf.float32)
@@ -484,7 +498,34 @@ class ADLOLoss(tf.keras.losses.Loss):
         # log-cosh loss for delta x, y, orientation
         dlo_true = y_true[:, 1:4]  # shape: (B,3)
         dlo_pred = y_pred[:, 1:4]  # shape: (B,3)
-        dlo_losses = tf.math.log(tf.cosh(dlo_pred - dlo_true))
+        if self._dlo_encoding.endswith('/log-cosh'):
+            dlo_losses = tf.math.log(tf.cosh(dlo_pred - dlo_true))
+        elif self._dlo_encoding.endswith('/linear'):
+            dlo_losses = tf.math.abs(dlo_pred - dlo_true)
+        elif self._dlo_encoding.endswith('/importance'):
+            dlo_losses = tf.math.abs(dlo_pred - dlo_true)
+
+            # y_true initially: shape (B,3) with columns:
+            #   delta-x:     -0.5..+0.5
+            #   delta-y:     -0.5..+0.5
+            #   delta-angle: -1.0..+1.0
+            # As a computationally efficient approximation, we take the L-inf norm of the first two columns,
+            # and then scale up to 0..1,
+            # and combine back with the unchanged third column.
+            # This gives everything in range 0.0 to 1.0. Finally, we apply an importance scaling
+            # s.t.
+            #   y_true ~= 0   -> 4.0x loss   <-- more importance when very close to zero
+            #   y_true ~= 0.2 -> 2.5x loss   <-- still high importance when close to zero
+            #   y_true ~= 1.0 -> 1.0x loss
+            scaled_dist_true = tf.reduce_max(dlo_true[:, 0:2], axis=1, keepdims=True) * 2  # (B,1) x -1..1
+            scaled_dlo_true = tf.concat([scaled_dist_true, scaled_dist_true, dlo_true[:, 2]])  # (B,3) x -1..1
+            scaled_dlo_true = tf.abs(scaled_dlo_true)  # (B,3) x 0..1
+            dlo_importance = 4 / (1 + 3 * tf.abs(scaled_dlo_true))  # (B,3) x 4..1
+
+            dlo_losses *= dlo_importance
+        else:
+            raise ValueError(f"Unknown dlo encoding: {self._dlo_encoding}")
+
         dlo_losses = tf.reduce_sum(dlo_losses, axis=-1)  # shape: (B,)
         dlo_losses = dlo_losses * mask
         dlo_losses = tf.reduce_sum(dlo_losses) / (tf.reduce_sum(mask) + 1e-8)
@@ -494,7 +535,8 @@ class ADLOLoss(tf.keras.losses.Loss):
     def get_config(self):
         config = super(ADLOLoss, self).get_config()
         config.update({
-            "from_logits": self._from_logits
+            "from_logits": self._from_logits,
+            "dlo_encoding": self._dlo_encoding
         })
         return config
 
