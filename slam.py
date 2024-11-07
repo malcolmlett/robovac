@@ -201,6 +201,8 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     return model
 
 
+# TODO really need to create a custom MapAccuracy mertic as the default one isn't
+# aware of the need ignore examples when ground-truth output map is blank
 def compile_model(model, **kwargs):
     """
     Compiles the model according to configuration that has proven to work well.
@@ -412,6 +414,8 @@ class ADLOActivation(tf.keras.layers.Layer):
         return tf.stack([accept, delta_x, delta_y, delta_angle], axis=1)
 
 
+# Note: don't add @tf.function to custom loss classes/functions. Auto-graphing is implied for these
+# and adding @tf.function seems to double up the graphing and makes everything run 100x slower.
 class MapLoss(tf.keras.losses.Loss):
     """
     Custom variant of a CategoricalCrossEntropyLoss that omits samples from the loss calculation
@@ -426,15 +430,14 @@ class MapLoss(tf.keras.losses.Loss):
         super(MapLoss, self).__init__(name=name, reduction=reduction)
         self._from_logits = from_logits
 
-    @tf.function
     def call(self, y_true, y_pred):
         # Compute mask - ignore samples where ground-truth output map is blank
         unknown_true = y_true[..., __UNKNOWN_IDX__]  # shape: (B,H,W)
-        unknown_min = tf.reduce_min(unknown_true, axis=range(1, tf.rank(unknown_true)))
+        unknown_min = tf.reduce_min(unknown_true, axis=(1, 2))  # shape: (B,)
         mask = tf.cast(tf.not_equal(unknown_min, 1.0), y_pred.dtype)  # shape: (B,)
 
         loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred, from_logits=self._from_logits)
-        loss = tf.reduce_mean(loss, axis=range(1, tf.rank(loss)))  # shape: (B,)
+        loss = tf.reduce_mean(loss, axis=(1, 2))  # shape: (B,)
         loss = loss * mask
 
         return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + 1e-8)  # shape: scalar
@@ -447,6 +450,8 @@ class MapLoss(tf.keras.losses.Loss):
         return config
 
 
+# Note: don't add @tf.function to custom loss classes/functions. Auto-graphing is implied for these
+# and adding @tf.function seems to double up the graphing and makes everything run 100x slower.
 class ADLOLoss(tf.keras.losses.Loss):
     """
     Custom loss for ADLO output.
@@ -465,7 +470,6 @@ class ADLOLoss(tf.keras.losses.Loss):
         super(ADLOLoss, self).__init__(name=name)
         self._from_logits = from_logits
 
-    @tf.function
     def call(self, y_true, y_pred):
         y_true = tf.cast(y_true, tf.float32)
 
