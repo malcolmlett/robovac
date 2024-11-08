@@ -497,7 +497,7 @@ class ADLOLoss(tf.keras.losses.Loss):
         # DLO mask - simply: include if accept_true, exclude otherwise
         mask = accept_true
 
-        # log-cosh loss for delta x, y, orientation
+        # loss for delta x, y, and orientation
         dlo_true = y_true[:, 1:4]  # shape: (B,3)
         dlo_pred = y_pred[:, 1:4]  # shape: (B,3)
         if self._dlo_encoding.endswith('/log-cosh'):
