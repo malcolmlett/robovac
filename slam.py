@@ -205,8 +205,6 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     return model
 
 
-# TODO really need to create a custom MapAccuracy mertic as the default one isn't
-# aware of the need ignore examples when ground-truth output map is blank
 def compile_model(model, **kwargs):
     """
     Compiles the model according to configuration that has proven to work well.
@@ -230,7 +228,7 @@ def compile_model(model, **kwargs):
                           'adlo_output': ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
                       },
                       metrics={
-                          'map_output': [MapLoss(from_logits=output_logits), 'accuracy'],
+                          'map_output': [MapLoss(from_logits=output_logits), MapAccuracy()],
                           'adlo_output': [ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding),
                                           AcceptAccuracy(), LocationError(), OrientationError()]
                       })
@@ -465,6 +463,52 @@ class MapLoss(tf.keras.losses.Loss):
         return config
 
 
+class MapAccuracy(tf.keras.metrics.Metric):
+    """
+    Metric function against the output map.
+
+    Computes the percentage of correct category predictions after scaling
+    and discretizing.
+
+    Assumes:
+      y_true: (B,H,W,3), probs
+      y_pred: (B,H,W,3), logits or probs
+      sample_weight: (B,) or None
+    Returns:
+      metric scalar 0.0 .. 1.0
+    """
+    def __init__(self, name="map_accuracy", **kwargs):
+        super(MapAccuracy, self).__init__(name=name, **kwargs)
+        self.total = self.add_weight(name="total", initializer="zeros")  # sum over (B,)
+        self.correct = self.add_weight(name="correct", initializer="zeros")  # sum over (B,)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        # Compute mask - ignore samples where ground-truth output map is blank
+        unknown_true = y_true[..., __UNKNOWN_IDX__]  # shape: (B,H,W)
+        unknown_min = tf.reduce_min(unknown_true, axis=(1, 2))  # shape: (B,)
+        mask = tf.cast(tf.not_equal(unknown_min, 1.0), y_pred.dtype)  # shape: (B,)
+
+        y_true_categories = tf.argmax(y_true, axis=-1)  # (B,H,W) x int
+        y_pred_categories = tf.argmax(y_pred, axis=-1)  # (B,H,W) x int
+        matches = tf.equal(y_true_categories, y_pred_categories)  # (B,H,W) x bool
+        matches = tf.cast(matches, self.dtype)
+        accuracies = tf.reduce_mean(matches, axis=(1, 2))  # (B,) x 0..1
+
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, self.dtype)
+            accuracies *= sample_weight
+
+        self.correct.assign_add(tf.reduce_sum(accuracies * mask))
+        self.total.assign_add(tf.reduce_sum(mask))
+
+    def result(self):
+        return self.correct / self.total
+
+    def reset_states(self):
+        self.total.assign(0.0)
+        self.correct.assign(0.0)
+
+
 # Note: don't add @tf.function to custom loss classes/functions. Auto-graphing is implied for these
 # and adding @tf.function seems to double up the graphing and makes everything run 100x slower.
 class ADLOLoss(tf.keras.losses.Loss):
@@ -562,7 +606,6 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
         self.correct = self.add_weight(name="correct", initializer="zeros")
         self._from_logits = from_logits
 
-    @tf.function
     def update_state(self, y_true, y_pred, sample_weight=None):
         accept_true = tf.cast(y_true[:, 0], tf.float32)
         if self._from_logits:
@@ -579,7 +622,6 @@ class AcceptAccuracy(tf.keras.metrics.Metric):
         self.correct.assign_add(tf.reduce_sum(matches))
         self.total.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
 
-    @tf.function
     def result(self):
         return self.correct / self.total
 
@@ -592,6 +634,7 @@ class LocationError(tf.keras.metrics.Metric):
     """
     Metric against the ADLO 'delta location' output.
     Computes the RMS error on the 'delta location' coordinate.
+    Masked to only include samples where accept_true=True.
 
     Assumes:
       y_true: (B,4), scaled
@@ -601,24 +644,26 @@ class LocationError(tf.keras.metrics.Metric):
     """
     def __init__(self, name="loc_error", **kwargs):
         super(LocationError, self).__init__(name=name, **kwargs)
-        self.total_error = self.add_weight(name="total_error", initializer="zeros")
-        self.count = self.add_weight(name="count", initializer="zeros")
+        self.total_error = self.add_weight(name="total_error", initializer="zeros")  # sum over (B,)
+        self.count = self.add_weight(name="count", initializer="zeros")  # sum over (B,)
 
-    @tf.function
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
-        loc_true = y_true[:, 1:3]  # -0.5 .. +0.5
-        loc_pred = y_pred[:, 1:3]  # -0.5 .. +0.5
-        losses = tf.math.sqrt(tf.keras.losses.MSE(loc_true, loc_pred))
+        accept_true = y_true[:, 0]  # shape: (B,) x 0.0 or 1.0
+        loc_true = y_true[:, 1:3]  # shape: (B,) x -0.5 .. +0.5
+        loc_pred = y_pred[:, 1:3]  # shape: (B,) x -0.5 .. +0.5
+        errors = tf.math.sqrt(tf.keras.losses.MSE(loc_true, loc_pred))
+
+        # DLO mask - simply: include if accept_true, exclude otherwise
+        mask = accept_true  # shape: (B,)
 
         if sample_weight is not None:
             sample_weight = tf.cast(sample_weight, self.dtype)
-            losses *= sample_weight
+            errors *= sample_weight
 
-        self.total_error.assign_add(tf.reduce_sum(losses))
-        self.count.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
+        self.total_error.assign_add(tf.reduce_sum(errors * mask))
+        self.count.assign_add(tf.reduce_sum(mask))
 
-    @tf.function
     def result(self):
         return self.total_error / self.count
 
@@ -644,21 +689,23 @@ class OrientationError(tf.keras.metrics.Metric):
         self.total_error = self.add_weight(name="total_error", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
 
-    @tf.function
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
+        accept_true = y_true[:, 0]  # shape: (B,) x 0.0 or 1.0
         angle_true = y_true[:, 3]  # -1.0 .. +1.0
         angle_pred = y_pred[:, 3]  # -1.0 .. +1.0
-        losses = tf.math.sqrt(tf.keras.losses.MSE(angle_true, angle_pred))
+        errors = tf.math.sqrt(tf.keras.losses.MSE(angle_true, angle_pred))
+
+        # DLO mask - simply: include if accept_true, exclude otherwise
+        mask = accept_true  # shape: (B,)
 
         if sample_weight is not None:
             sample_weight = tf.cast(sample_weight, self.dtype)
-            losses *= sample_weight
+            errors *= sample_weight
 
-        self.total_error.assign_add(tf.reduce_sum(losses))
-        self.count.assign_add(tf.cast(tf.shape(y_true)[0], self.dtype))
+        self.total_error.assign_add(tf.reduce_sum(errors * mask))
+        self.count.assign_add(tf.reduce_sum(mask))
 
-    @tf.function
     def result(self):
         return self.total_error / self.count
 
