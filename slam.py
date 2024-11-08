@@ -228,7 +228,7 @@ def compile_model(model, **kwargs):
                           'adlo_output': ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
                       },
                       metrics={
-                          'map_output': [MapLoss(from_logits=output_logits), MapAccuracy()],
+                          'map_output': [MapLoss(from_logits=output_logits), MapAccuracy(), ObstructionAccuracy()],
                           'adlo_output': [ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding),
                                           AcceptAccuracy(), LocationError(), OrientationError()]
                       })
@@ -491,6 +491,63 @@ class MapAccuracy(tf.keras.metrics.Metric):
         y_true_categories = tf.argmax(y_true, axis=-1)  # (B,H,W) x int
         y_pred_categories = tf.argmax(y_pred, axis=-1)  # (B,H,W) x int
         matches = tf.equal(y_true_categories, y_pred_categories)  # (B,H,W) x bool
+        matches = tf.cast(matches, self.dtype)
+        accuracies = tf.reduce_mean(matches, axis=(1, 2))  # (B,) x 0..1
+
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, self.dtype)
+            accuracies *= sample_weight
+
+        self.correct.assign_add(tf.reduce_sum(accuracies * mask))
+        self.total.assign_add(tf.reduce_sum(mask))
+
+    def result(self):
+        return self.correct / self.total
+
+    def reset_states(self):
+        self.total.assign(0.0)
+        self.correct.assign(0.0)
+
+
+class ObstructionAccuracy(tf.keras.metrics.Metric):
+    """
+    Metric function against the output map that focuses on
+    obstruction detection.
+    This is because only a few pixels of any given output map are obstructions,
+    so MapAccuracy() alone can ignore significant problems.
+
+    This metric measures the accuracy across all pixels whether _either_
+    the true state is an obstruction or the predicted state is an obstruction.
+    In effect, this calculates the accuracy primarily based on False Negative and False Positive.
+
+    Assumes:
+      y_true: (B,H,W,3), probs
+      y_pred: (B,H,W,3), logits or probs
+      sample_weight: (B,) or None
+    Returns:
+      metric scalar 0.0 .. 1.0
+    """
+    def __init__(self, name="obstruction_accuracy", **kwargs):
+        super(ObstructionAccuracy, self).__init__(name=name, **kwargs)
+        self.total = self.add_weight(name="total", initializer="zeros")  # sum over (B,)
+        self.correct = self.add_weight(name="correct", initializer="zeros")  # sum over (B,)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        # Sample mask - ignore samples where ground-truth output map is blank
+        unknown_true = y_true[..., __UNKNOWN_IDX__]  # shape: (B,H,W)
+        unknown_min = tf.reduce_min(unknown_true, axis=(1, 2))  # shape: (B,)
+        mask = tf.cast(tf.not_equal(unknown_min, 1.0), y_pred.dtype)  # shape: (B,)
+
+        # Pixel mask - include only pixels whether EITHER y_true or y_pred have on obstruction
+        y_true_categories = tf.argmax(y_true, axis=-1)  # (B,H,W) x int
+        y_pred_categories = tf.argmax(y_pred, axis=-1)  # (B,H,W) x int
+        pixel_mask = tf.logical_or(
+            tf.equal(y_true_categories, __OBSTRUCTION_IDX__),
+            tf.equal(y_pred_categories, __OBSTRUCTION_IDX__)
+        )
+
+        matches = tf.equal(y_true_categories, y_pred_categories)  # (B,H,W) x bool
+        matches *= pixel_mask
         matches = tf.cast(matches, self.dtype)
         accuracies = tf.reduce_mean(matches, axis=(1, 2))  # (B,) x 0..1
 
