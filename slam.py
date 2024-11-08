@@ -541,25 +541,28 @@ class ObstructionAccuracy(tf.keras.metrics.Metric):
         # Pixel mask - include only pixels whether EITHER y_true or y_pred have on obstruction
         y_true_categories = tf.argmax(y_true, axis=-1)  # (B,H,W) x int
         y_pred_categories = tf.argmax(y_pred, axis=-1)  # (B,H,W) x int
-        pixel_mask = tf.logical_or(
+        pixel_mask = tf.cast(tf.logical_or(
             tf.equal(y_true_categories, __OBSTRUCTION_IDX__),
             tf.equal(y_pred_categories, __OBSTRUCTION_IDX__)
-        )
+        ), self.dtype)  # shape: (B,H,W) x float of 0.0 or 1.0
 
         matches = tf.equal(y_true_categories, y_pred_categories)  # (B,H,W) x bool
+        matches = tf.cast(matches, self.dtype)  # (B,H,W) x float
         matches *= pixel_mask
-        matches = tf.cast(matches, self.dtype)
-        accuracies = tf.reduce_mean(matches, axis=(1, 2))  # (B,) x 0..1
+
+        _correct = tf.reduce_sum(matches, axis=(1, 2)) * mask
+        _total = tf.reduce_sum(pixel_mask, axis=(1, 2)) * mask
 
         if sample_weight is not None:
             sample_weight = tf.cast(sample_weight, self.dtype)
-            accuracies *= sample_weight
+            _correct *= sample_weight
+            _total *= sample_weight
 
-        self.correct.assign_add(tf.reduce_sum(accuracies * mask))
-        self.total.assign_add(tf.reduce_sum(mask))
+        self.correct.assign_add(tf.reduce_sum(_correct))
+        self.total.assign_add(tf.reduce_sum(_total))
 
     def result(self):
-        return self.correct / self.total
+        return self.correct / (self.total + 1e-8)
 
     def reset_states(self):
         self.total.assign(0.0)
