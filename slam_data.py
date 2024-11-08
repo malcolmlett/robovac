@@ -135,14 +135,14 @@ def generate_training_data(semantic_map, num_samples=5, **kwargs):
     model_weight = kwargs.get('model_weight', 1.0 if model is not None else 0.0)
     predicted_sample_locs, predicted_sample_maps = kwargs.get('predicted_samples', (None, None))
     print(f"Generating {num_samples} samples of training data")
-    print(f"Pixel size: {pixel_size}")
-    print(f"Max distance: {max_distance}")
-    print(f"Sample types: {sample_types}")
     if model is not None or predicted_sample_maps is not None:
         print(f"Input maps: using predicted input maps with weight {model_weight}")
     else:
         print("Input maps: using floorplan samples only")
-    if not np.max(mask_output_map_by_sample_type):
+    print(f"Pixel size: {pixel_size}")
+    print(f"Max distance: {max_distance}")
+    print(f"Sample types: {sample_types}")
+    if np.sum(mask_output_map_by_sample_type) == 0:
         print(f"Mask output for sample types: None")
     else:
         print(f"Mask output for sample types: {np.where(mask_output_map_by_sample_type)}")
