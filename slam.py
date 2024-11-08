@@ -198,6 +198,7 @@ def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
     print(f"  Map shape:        {map_shape} + padding ({pad_h}, {pad_w}, 0)")
     print(f"  Skip-connections: {merge_mode}")
     print(f"  Output scaling:   {'logits' if output_logits else 'scaled'}")
+    print(f"  DLO encoding:     {dlo_encoding}")
     print(f"  Inputs:           {model.inputs}")
     print(f"  Outputs:          {model.outputs}")
     print(f"  Compiled:         {do_compile}")
@@ -220,23 +221,24 @@ def compile_model(model, **kwargs):
     """
     output_logits = kwargs.get('output_logits', True)
     verbose_history = kwargs.get('verbose_history', False)
+    dlo_encoding = kwargs.get('dlo_encoding', 'linear/importance')
 
     if verbose_history:
         model.compile(optimizer='adam',
                       loss={
                           'map_output': MapLoss(from_logits=output_logits),
-                          'adlo_output': ADLOLoss(from_logits=output_logits)
+                          'adlo_output': ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
                       },
                       metrics={
                           'map_output': [MapLoss(from_logits=output_logits), 'accuracy'],
-                          'adlo_output': [ADLOLoss(from_logits=output_logits), AcceptAccuracy(), LocationError(),
-                                          OrientationError()]
+                          'adlo_output': [ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding),
+                                          AcceptAccuracy(), LocationError(), OrientationError()]
                       })
     else:
         model.compile(optimizer='adam',
                       loss={
                           'map_output': MapLoss(from_logits=output_logits),
-                          'adlo_output': ADLOLoss(from_logits=output_logits)
+                          'adlo_output': ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
                       })
 
 
