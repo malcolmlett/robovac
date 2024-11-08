@@ -489,6 +489,94 @@ def get_location_range(semantic_map, exclude_border=False, **kwargs):
     return low_px * pixel_size, high_px * pixel_size
 
 
+class DatasetRevisor:
+    """
+    Supports curriculum learning where the model itself is used to regenerate new
+    input maps within the training data. Intended to be used within a custom training
+    loop that revises the dataset every few epochs.
+    """
+
+    # TODO update to a list of labelled floorplans
+    def __init__(self, floorplan, model, **kwargs):
+        """
+        Args:
+            floorplan: ground-truth semantic map of entire floor.
+            model: model to use for prediction
+        Keyword args:
+          pixel_size: the usual
+          max_distance: the usual
+          resolution: float, default: 0.25.
+            Target resolution of sample points, as a fraction of the LDS max distance.
+            For example, 0.25 aims to achieve sampling points on a grid with
+            0.25*max_distance distance between them.
+            In 'random' sampling mode, this is only approximate.
+          sampling mode: 'random' or 'grid', default: 'random'.
+        """
+        self.floorplan = floorplan
+        self.model = model
+
+        # TODO build these up into a single object so it's easier to pass around
+        self.pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+        self.max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
+
+        self._sample_locations = None
+        self._sample_maps = None
+
+    def apply(self, dataset):
+        """
+        Applies the revision process against the supplied dataset, returning a new
+        dataset with revised contents.
+        Args:
+            dataset: input dataset with entries of form:
+                ((input_map, lds_map), (map_output, adlo_output), metadata).
+        Returns:
+            revised dataset with same structure as input dataset.
+        """
+        self.prepare()
+
+        return dataset.map(map)
+
+    def prepare(self):
+        """
+        Performs pre-computation steps.
+        Takes a number of LDS samples around the entire floorplan and uses
+        the model to convert to semantic map predictions. These are cached
+        and used while revising the dataset.
+        """
+        sample_locations, _, _, sample_maps = take_samples_covering_map(
+            self.floorplan, self.model,
+            sampling_mode='random',
+            pixel_size=self.pixel_size,
+            max_distance=self.max_distance)
+        self._sample_locations = sample_locations
+        self._sample_maps = sample_maps
+
+    def map(self, inputs, outputs, metadata):
+        """
+        Passed as a function to TF.Dataset.map()
+        """
+        (input_map, lds_map) = inputs
+        (output_map, output_adlo) = outputs
+
+        # skip if input_map is blanked out
+        unknown_min = tf.reduce_min(input_map[..., __UNKNOWN_IDX__])
+        if unknown_min == 1.0:
+            return (input_map, lds_map), (output_map, output_adlo), metadata
+
+        map_centre = metadata[2:4]  # x,y, units: physical
+        map_orientation = metadata[4]
+        size_px = input_map.shape[1:3]
+        if map_orientation != 0:
+            raise ValueError(f"Only supports zero-degrees oriented maps, found: {map_orientation}")
+
+        new_input_map = pre_sampled_crop(
+            map_centre, size_px, self._sample_locations, self._sample_maps,
+            sampling_mode='centre-first', max_samples=5,
+            pixel_size=self.pixel_size, max_distance=self.max_distance)
+
+        return (new_input_map, lds_map), (output_map, output_adlo), metadata
+
+
 def take_samples_covering_map(semantic_map, model=None, **kwargs):
     """
     Generates a bunch of sample points and LDS maps to cover the area of the given map.
