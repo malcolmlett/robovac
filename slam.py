@@ -507,23 +507,22 @@ class ADLOLoss(tf.keras.losses.Loss):
         elif self._dlo_encoding.endswith('/importance'):
             dlo_losses = tf.math.abs(dlo_pred - dlo_true)
 
-            # y_true initially: shape (B,3) with columns:
-            #   delta-x:     -0.5..+0.5
-            #   delta-y:     -0.5..+0.5
-            #   delta-angle: -1.0..+1.0
-            # As a computationally efficient approximation, we take the L-inf norm of the first two columns,
-            # and then scale up to 0..1,
+            # For importance calculation we first convert dlo_true's value ranges as follows:
+            #   delta-x:     abs(-0.5..+0.5) * 2 -> 0..1
+            #   delta-y:     abs(-0.5..+0.5) * 2 -> 0..1
+            #   delta-angle: abs(-1.0..+1.0)     -> 0..1
+            # As a computationally efficient approximation of a L2 distance that is biased towards
+            # giving higher importance, we simply take the max of delta-x and delta-y (ie: the L-inf norm),
             # and combine back with the unchanged third column.
             # This gives everything in range 0.0 to 1.0. Finally, we apply an importance scaling
             # s.t.
             #   y_true ~= 0   -> 4.0x loss   <-- more importance when very close to zero
-            #   y_true ~= 0.2 -> 2.5x loss   <-- still high importance when close to zero
-            #   y_true ~= 1.0 -> 1.0x loss
-            scaled_dist_true = tf.reduce_max(dlo_true[:, 0:2], axis=1, keepdims=True) * 2  # (B,1) x -1..1
-            scaled_dlo_true = tf.concat([scaled_dist_true, scaled_dist_true, dlo_true[:, 2]])  # (B,3) x -1..1
-            scaled_dlo_true = tf.abs(scaled_dlo_true)  # (B,3) x 0..1
-            dlo_importance = 4 / (1 + 3 * tf.abs(scaled_dlo_true))  # (B,3) x 4..1
-
+            #   y_true ~= 0.2 -> 2.5x loss   <-- still high importance when near zero
+            #   y_true ~= 1.0 -> 1.0x loss   <-- drops to normal loss at edges
+            scaled_dist_true = tf.reduce_max(tf.abs(dlo_true[:, 0:2]), axis=-1, keepdims=True) * 2  # (B,1) x 0..1
+            scaled_dlo_true = tf.concat([scaled_dist_true, scaled_dist_true, tf.abs(dlo_true[:, 2:])],
+                                        axis=-1)  # (B,3) x 0..1
+            dlo_importance = 4 / (1 + 3 * scaled_dlo_true)  # (B,3) x 4..1
             dlo_losses *= dlo_importance
         else:
             raise ValueError(f"Unknown dlo encoding: {self._dlo_encoding}")
