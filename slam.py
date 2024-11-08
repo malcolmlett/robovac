@@ -650,11 +650,14 @@ class LocationError(tf.keras.metrics.Metric):
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
         accept_true = y_true[:, 0]  # shape: (B,) x 0.0 or 1.0
-        loc_true = y_true[:, 1:3]  # shape: (B,) x -0.5 .. +0.5
-        loc_pred = y_pred[:, 1:3]  # shape: (B,) x -0.5 .. +0.5
-        errors = tf.math.sqrt(tf.keras.losses.MSE(loc_true, loc_pred))
+        loc_true = y_true[:, 1:3]  # shape: (B,2) x -0.5 .. +0.5
+        loc_pred = y_pred[:, 1:3]  # shape: (B,2) x -0.5 .. +0.5
 
-        # DLO mask - simply: include if accept_true, exclude otherwise
+        # compute RMSE per sample
+        errors = tf.square(loc_true - loc_pred)  # shape: (B,2)
+        errors = tf.math.sqrt(tf.reduce_mean(errors, axis=-1))  # shape: (B,)
+
+        # DLO mask: include if accept_true, exclude otherwise
         mask = accept_true  # shape: (B,)
 
         if sample_weight is not None:
@@ -676,7 +679,9 @@ class OrientationError(tf.keras.metrics.Metric):
     """
     Metric against the ADLO 'delta orientation' output.
 
-    Computes the RMS error on the 'delta orientation' value.
+    Computes the abs mean error on the 'delta orientation' value.
+    (This is the most comparable with how we're computing the LocationError).
+    Masked to only include samples where accept_true=True.
 
     Assumes:
       y_true: (B,4), scaled
@@ -686,15 +691,15 @@ class OrientationError(tf.keras.metrics.Metric):
     """
     def __init__(self, name="orientation_error", **kwargs):
         super(OrientationError, self).__init__(name=name, **kwargs)
-        self.total_error = self.add_weight(name="total_error", initializer="zeros")
-        self.count = self.add_weight(name="count", initializer="zeros")
+        self.total_error = self.add_weight(name="total_error", initializer="zeros")  # sum over (B,)
+        self.count = self.add_weight(name="count", initializer="zeros")  # sum over (B,)
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(y_true, tf.float32)
         accept_true = y_true[:, 0]  # shape: (B,) x 0.0 or 1.0
-        angle_true = y_true[:, 3]  # -1.0 .. +1.0
-        angle_pred = y_pred[:, 3]  # -1.0 .. +1.0
-        errors = tf.math.sqrt(tf.keras.losses.MSE(angle_true, angle_pred))
+        angle_true = y_true[:, 3]  # shape: (B,) x -1.0 .. +1.0
+        angle_pred = y_pred[:, 3]  # shape: (B,) x -1.0 .. +1.0
+        errors = tf.math.abs(angle_true - angle_pred)  # shape: (B,)
 
         # DLO mask - simply: include if accept_true, exclude otherwise
         mask = accept_true  # shape: (B,)
