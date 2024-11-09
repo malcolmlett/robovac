@@ -543,6 +543,7 @@ class DatasetRevisor:
         self._sample_locations = sample_locations
         self._sample_maps = sample_maps
 
+    @tf.function
     def map(self, inputs, outputs, metadata):
         """
         Passed as a function to TF.Dataset.map()
@@ -557,14 +558,14 @@ class DatasetRevisor:
 
         map_centre = metadata[2:4]  # x,y, units: physical
         map_orientation = metadata[4]
-        size_px = input_map.shape[1:3]
-        if map_orientation != 0:
-            raise ValueError(f"Only supports zero-degrees oriented maps, found: {map_orientation}")
+        size_px = input_map.shape[0:2]
+        tf.debugging.assert_equal(
+            map_orientation, 0.0,
+            message=f"Only supports zero-degrees oriented maps, found: {map_orientation}")
 
         new_input_map = pre_sampled_crop(
             map_centre, size_px, self._sample_locations, self._sample_maps,
-            sampling_mode='centre-first', max_samples=5,
-            pixel_size=self.pixel_size, max_distance=self.max_distance)
+            sampling_mode='centre-first', max_samples=5)
 
         return (new_input_map, lds_map), (output_map, output_adlo), metadata
 
