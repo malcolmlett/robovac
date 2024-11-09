@@ -505,17 +505,9 @@ class DatasetRevisor:
         Keyword args:
           pixel_size: the usual
           max_distance: the usual
-          resolution: float, default: 0.25.
-            Target resolution of sample points, as a fraction of the LDS max distance.
-            For example, 0.25 aims to achieve sampling points on a grid with
-            0.25*max_distance distance between them.
-            In 'random' sampling mode, this is only approximate.
-          sampling mode: 'random' or 'grid', default: 'random'.
         """
         self.floorplan = floorplan
         self.model = model
-
-        # TODO build these up into a single object so it's easier to pass around
         self.pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
         self.max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
 
@@ -622,12 +614,12 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
 
     # Generate sample points
     if sampling_mode == 'random':
-        locs = np.random.uniform(map_range_low, map_range_high, size=(target_count, 2))
-        orientations = np.random.uniform(-np.pi, np.pi, size=(target_count,))
+        locs = np.random.uniform(map_range_low, map_range_high, size=(target_count, 2)).astype(np.float32)
+        orientations = np.random.uniform(-np.pi, np.pi, size=(target_count,)).astype(np.float32)
     elif sampling_mode == 'grid':
         x, y = np.meshgrid(np.arange(start=map_range_low[0], stop=map_range_high[0], step=dist),
                            np.arange(start=map_range_low[1], stop=map_range_high[1], step=dist))
-        locs = np.stack((x.flatten(), y.flatten()), axis=1)
+        locs = np.stack((x.flatten(), y.flatten()), axis=1).astype(np.float32)
         orientations = np.zeros(shape=(locs.shape[0],), dtype=np.float32)
     else:
         raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
