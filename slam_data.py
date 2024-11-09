@@ -726,44 +726,46 @@ def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
       semantic_map: (H,W,C)
     """
     # config
-    centre = np.array(centre)
-    size_px = np.array(size_px)
+    centre = tf.convert_to_tensor(centre, dtype=tf.float32)
+    size_px = tf.convert_to_tensor(size_px, dtype=tf.int32)
     max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
     sampling_mode = kwargs.get('sampling_mode', 'all')
     max_samples = kwargs.get('max_samples', 5)
 
     # identify samples to use
-    distances = np.linalg.norm(centre - sample_locations, axis=1)
-    target_sample_count = np.random.randint(1, max_samples + 1)
+    distances = tf.norm(centre - sample_locations, axis=1)
+    target_sample_count = tf.random.uniform([], minval=1, maxval=max_samples + 1, dtype=tf.int32)
+
     if sampling_mode == 'all':
         # pick all with any overlap at all
-        sample_indices = np.arange(len(sample_locations))[distances <= max_distance * 2]
+        sample_indices = tf.where(distances <= max_distance * 2)[:, 0]
     elif sampling_mode == 'centre-first':
-        centre_idx = np.argmin(distances)
+        centre_idx = tf.argmin(distances)
 
         # choose from the set with significant overlap
-        available_indices = np.arange(len(sample_locations))[distances <= max_distance]
-        available_indices = available_indices[available_indices != centre_idx]
-        sample_indices = np.random.choice(available_indices, size=min(target_sample_count - 1, len(available_indices)),
-                                          replace=False)
+        available_indices = tf.where(distances <= max_distance)[:, 0]
+        available_indices = tf.boolean_mask(available_indices, available_indices != centre_idx)
+        num_choices = tf.minimum(target_sample_count - 1, tf.shape(available_indices)[0])
+        sample_indices = tf.random.shuffle(available_indices)[:num_choices]
 
         # final result is centre plus randomly chosen ones
-        sample_indices = np.append(sample_indices, centre_idx)
+        sample_indices = tf.concat([sample_indices, [centre_idx]], axis=0)
     elif sampling_mode == 'uniform':
         # choose from the set with sufficient overlap
-        available_indices = np.arange(len(sample_locations))[distances <= max_distance * 1.5]
-        sample_indices = np.random.choice(available_indices, size=min(target_sample_count, len(available_indices)),
-                                          replace=False)
+        available_indices = tf.where(distances <= max_distance * 1.5)[:, 0]
+        num_choices = tf.minimum(target_sample_count, tf.shape(available_indices)[0])
+        sample_indices = tf.random.shuffle(available_indices)[:num_choices]
     else:
         raise ValueError(f"Unknown sampling mode: {sampling_mode}")
-    sample_indices = sample_indices.astype(int)
 
     # combine chosen samples
-    centre_px = np.round(centre / lds.__PIXEL_SIZE__).astype(int)
+    centre_px = tf.cast(tf.round(centre / lds.__PIXEL_SIZE__), tf.int32)
     window_radius_px = (size_px - 1) // 2
-    output_range_px = (centre_px[0] - window_radius_px[0], centre_px[1] - window_radius_px[1], size_px[0], size_px[1])
+    output_range_px = tf.stack([centre_px[0] - window_radius_px[0], centre_px[1] - window_radius_px[1], size_px[0], size_px[1]])
+
     combined_map, _ = combine_semantic_maps(
-        sample_locations[sample_indices], tf.gather(sample_maps, sample_indices),
+        tf.gather(sample_locations, sample_indices),
+        tf.gather(sample_maps, sample_indices),
         output_range_px=output_range_px, **kwargs)
     return combined_map
 
