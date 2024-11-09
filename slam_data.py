@@ -836,11 +836,11 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
 
     Keyword args:
         pixel_size: usual meaning
-        output_range: float array, (x1, y1, w, h), unit: physical.
+        output_range: float tensor, (x1, y1, w, h), unit: physical.
           Location span of output map, from start of centre of its top-left pixel.
           If not provided, output map is computed to span the union of the
           maps provided.
-        output_range_px: float array, (x1, y1, w, h), unit: pixels.
+        output_range_px: float tensor, (x1, y1, w, h), unit: pixels.
           Same as output_range, but in pixel units relative to the original
           floorplan pixel coordinates. At most one should be provided.
 
@@ -855,60 +855,74 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
     output_range_apu = kwargs.get('output_range')  # absolute physical units
     output_range_apx = kwargs.get('output_range_px')  # absolute pixel units
-    window_size_px = np.array([semantic_maps.shape[2], semantic_maps.shape[1]])
+    window_size_px = tf.gather(tf.shape(semantic_maps), (2,1))  # (N,H,W,3) -> [w,h]
 
     # compute coordinates of output map
     # - offset_px   - px coord of centre of top-left most window
-    # - out_size_px - px width,height
+    # - out_shape   - px height,width
     if output_range_apx is not None:
-        output_range_apx = np.round(output_range_apx).astype(int)
+        output_range_apx = tf.cast(tf.round(output_range_apx), tf.int32)
     elif output_range_apu is not None:
-        output_range_apx = np.round(np.array(output_range_apu) / pixel_size).astype(int)
+        output_range_apx = tf.cast(tf.round(output_range_apu / pixel_size), tf.int32)
 
-    half_window_px = (window_size_px - 1) // 2
+    half_window_px = (window_size_px - 1) // 2  # (2,) x int32
     if output_range_apx is not None:
-        offset_px = (output_range_apx[0:2] + half_window_px).astype(int)
-        out_size_px = output_range_apx[2:4]
+        offset_px = tf.gather(output_range_apx, (0,1)) + half_window_px
+        out_shape = tf.gather(output_range_apx, (2,3))  # (h,w)
     else:
-        min_locs_px = np.round(np.min(locs, axis=0) / pixel_size) - half_window_px
-        max_locs_px = np.round(np.max(locs, axis=0) / pixel_size) - half_window_px + window_size_px
-        offset_px = (min_locs_px + half_window_px).astype(int)
-        out_size_px = (max_locs_px - min_locs_px).astype(int)
-    location_start = (offset_px - half_window_px) * pixel_size
+        min_locs_px = tf.cast(tf.round(tf.reduce_min(locs, axis=0) / pixel_size), tf.int32) - half_window_px
+        max_locs_px = tf.cast(tf.round(tf.reduce_max(locs, axis=0) / pixel_size), tf.int32) - half_window_px + window_size_px
+        offset_px = min_locs_px + half_window_px  # (2,) x int32
+        out_shape = tf.gather(max_locs_px - min_locs_px, (1,0))  # (h,w)
+    location_start = tf.cast(offset_px - half_window_px, tf.float32) * pixel_size  # (2,) x float32
+
+    # Initialize tensors for accumulation
+    max_observed = tf.zeros(out_shape, dtype=tf.float32)
+    sum_observed = tf.zeros(out_shape, dtype=tf.float32)
+    out_sum = tf.zeros(tf.concat([out_shape, tf.constant([3], tf.int32)], axis=0), dtype=tf.float32)
 
     # compute max and sums across entire map
     # also compute sum over samples
-    max_observed = np.zeros((out_size_px[1], out_size_px[0]))
-    sum_observed = np.zeros((out_size_px[1], out_size_px[0]))
-    out_sum = np.zeros((out_size_px[1], out_size_px[0], 3))
-    for i in range(locs.shape[0]):
-        this_map = semantic_maps[i]
-        start_px = np.round(locs[i] / pixel_size).astype(int) - offset_px  # window-centre apu -> top-left px
-        observed = np.sum(this_map[..., 0:2], axis=-1)
-        out_slices, map_slices = get_intersect_ranges((out_size_px[1], out_size_px[0]), this_map.shape[0:2], start_px)
+    def process_map(i, out_sum, sum_observed, max_observed):
+        this_map = tf.gather(semantic_maps, i, axis=0)  # (H,W,C)
+        start_px = tf.cast(tf.round(locs[i] / pixel_size), tf.int32) - offset_px  # window-centre apu -> top-left px
+        observed = tf.reduce_sum(tf.gather(this_map, indices=(0, 1), axis=-1), axis=-1)  # (H,W) x 0..1 prob
+        out_indices, map_indices = get_intersect_ranges_tf(out_shape, tf.shape(this_map), start_px)
 
+        # Accumulate values
         # sum{i} p(floor|Si)
         # sum{i} p(wall|Si)
-        out_sum[out_slices] = np.add(out_sum[out_slices], this_map[map_slices])
+        # out_sum[out_slices] = np.add(out_sum[out_slices], this_map[map_slices])
+        out_sum = tf.tensor_scatter_nd_add(out_sum, out_indices, tf.gather_nd(this_map, map_indices))
 
         # sum p(observed|Sj) = normalizer
-        sum_observed[out_slices] = np.add(sum_observed[out_slices], observed[map_slices])
+        # sum_observed[out_slices] = np.add(sum_observed[out_slices], observed[map_slices])
+        sum_observed = tf.tensor_scatter_nd_add(sum_observed, out_indices, tf.gather_nd(observed, map_indices))
 
         # max p(observed|Sk) = p(observable)
-        max_observed[out_slices] = np.maximum(max_observed[out_slices], observed[map_slices])
+        # max_observed[out_slices] = np.maximum(max_observed[out_slices], observed[map_slices])
+        max_observed = tf.tensor_scatter_nd_max(max_observed, out_indices, tf.gather_nd(observed, map_indices))
 
-    # compute final output map
+        return i + 1, out_sum, sum_observed, max_observed
+
+    # Loop over all semantic maps and combine
+    i = tf.constant(0)
+    cond = lambda i, out_sum, sum_observed, max_observed: tf.less(i, tf.shape(locs)[0])
+    _, out_sum, sum_observed, max_observed = tf.while_loop(cond, process_map, [i, out_sum, sum_observed, max_observed])
+
+    # Compute the final output map
     # - p(floor|observable) = sum{i} p(floor|Si) / sum p(observed|Sj) * max p(observed|Sk)
     # - p(wall |observable) = sum{i} p(wall |Si) / sum p(observed|Sj) * max p(observed|Sk)
-    sum_observed[sum_observed == 0] = 1e-7  # avoid divide-by-zero (max_observed will be zero)
-    out = out_sum / sum_observed[..., np.newaxis] * max_observed[..., np.newaxis]
+    sum_observed = tf.where(sum_observed == 0, tf.constant(1e-8, dtype=tf.float32), sum_observed)  # avoid div-by-zero
+    out = out_sum / sum_observed[..., tf.newaxis] * max_observed[..., tf.newaxis]
 
     # - p(unobservable) = 1 - max{i} p(observed|Si)
-    out[..., __UNKNOWN_IDX__] = 1 - max_observed
+    out_unknown = tf.expand_dims(1 - max_observed, axis=-1)
 
-    # cast final result to float32
-    # (prior computations are in float64 by default)
-    return out.astype(np.float32), location_start
+    # combine
+    out = tf.cast(tf.concat([out[..., 0:2], out_unknown], axis=-1), tf.float32)
+
+    return out, location_start
 
 
 def get_intersect_ranges(map1, map2, offset_px):
