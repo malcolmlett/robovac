@@ -50,53 +50,66 @@ def get_intersect_ranges_tf_test():
             tf.convert_to_tensor(map_shape2),
             tf.convert_to_tensor(offset_px))
 
+    def range_indices(row_start, row_end, col_start, col_end):
+        rows, cols = tf.meshgrid(tf.range(row_start, row_end), tf.range(col_start, col_end), indexing='ij')
+        return tf.stack([rows, cols], axis=-1)
+
     def assert_equal(actual, expected):
-        (actual1, actual2), (actual3, actual4) = actual
-        (expected1, expected2), (expected3, expected4) = expected
+        actual1, actual2 = actual
+        expected1, expected2 = expected
+        actual1 = dim_squeeze(actual1)
+        actual2 = dim_squeeze(actual2)
+        expected1 = dim_squeeze(expected1)
+        expected2 = dim_squeeze(expected2)
+        tf.debugging.assert_equal(actual1.shape, expected1.shape)
+        tf.debugging.assert_equal(actual2.shape, expected2.shape)
         tf.debugging.assert_equal(actual1, expected1)
         tf.debugging.assert_equal(actual2, expected2)
-        tf.debugging.assert_equal(actual3, expected3)
-        tf.debugging.assert_equal(actual4, expected4)
 
-    assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (0, 0)),
-                 ((tf.range(0, 139), tf.range(0, 294)), (tf.range(0, 139), tf.range(0, 294))))
+    # deal with the fact that the ranges calculation happily returns
+    # empty tensors with shapes like [139, 0, 2]
+    def dim_squeeze(tensor):
+        return tf.zeros([0, 0, 0], dtype=tensor.dtype) if tf.size(tensor) == 0 else tensor
+
+    assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (0, 00)),
+                 (range_indices(0, 139, 0, 294), range_indices(0, 139, 0, 294)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (10, 0)),
-                 ((tf.range(0, 139), tf.range(10, 294)), (tf.range(0, 139), tf.range(0, 284))))
+                 (range_indices(0, 139, 10, 294), range_indices(0, 139, 0, 284)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (0, 10)),
-                 ((tf.range(10, 139), tf.range(0, 294)), (tf.range(0, 129), tf.range(0, 294))))
+                 (range_indices(10, 139, 0, 294), range_indices(0, 129, 0, 294)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (10, 10)),
-                 ((tf.range(10, 139), tf.range(10, 294)), (tf.range(0, 129), tf.range(0, 284))))
+                 (range_indices(10, 139, 10, 294), range_indices(0, 129, 0, 284)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (-10, 0)),
-                 ((tf.range(0, 139), tf.range(0, 284)), (tf.range(0, 139), tf.range(10, 294))))
+                 (range_indices(0, 139, 0, 284), range_indices(0, 139, 10, 294)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (0, -10)),
-                 ((tf.range(0, 129), tf.range(0, 294)), (tf.range(10, 139), tf.range(0, 294))))
+                 (range_indices(0, 129, 0, 294), range_indices(10, 139, 0, 294)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (-10, -10)),
-                 ((tf.range(0, 129), tf.range(0, 284)), (tf.range(10, 139), tf.range(10, 294))))
+                 (range_indices(0, 129, 0, 284), range_indices(10, 139, 10, 294)))
     assert_equal(get_intersect_ranges_safe((139, 294), (100, 200), (0, 0)),
-                 ((tf.range(0, 100), tf.range(0, 200)), (tf.range(0, 100), tf.range(0, 200))))
+                 (range_indices(0, 100, 0, 200), range_indices(0, 100, 0, 200)))
     assert_equal(get_intersect_ranges_safe((100, 200), (139, 294), (0, 0)),
-                 ((tf.range(0, 100), tf.range(0, 200)), (tf.range(0, 100), tf.range(0, 200))))
+                 (range_indices(0, 100, 0, 200), range_indices(0, 100, 0, 200)))
     assert_equal(get_intersect_ranges_safe((50, 50), (60, 60), (45, 45)),
-                 ((tf.range(45, 50), tf.range(45, 50)), (tf.range(0, 5), tf.range(0, 5))))
+                 (range_indices(45, 50, 45, 50), range_indices(0, 5, 0, 5)))
 
     assert_equal(get_intersect_ranges_safe((50, 50), (60, 60), (50, 50)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (294, 0)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (-294, 0)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (0, 139)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (0, -139)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (294, -139)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (-294, 139)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (300, 300)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
     assert_equal(get_intersect_ranges_safe((139, 294), (139, 294), (-300, -300)),
-                 ((tf.range(0, 0), tf.range(0, 0)), (tf.range(0, 0), tf.range(0, 0))))
+                 (range_indices(0, 0, 0, 0), range_indices(0, 0, 0, 0)))
 
 
 def _map_shape_test():

@@ -959,7 +959,6 @@ def get_intersect_ranges(map1, map2, offset_px):
         return (slice(start1[1], end1[1]), slice(start1[0], end1[0])), (slice(start2[1], end2[1]), slice(start2[0], end2[0]))
 
 
-# TODO add @tf.function
 def get_intersect_ranges_tf(map_shape1, map_shape2, offset_px):
     """
     TF AutoGraph compatible equivalent of get_intersect_ranges().
@@ -976,6 +975,7 @@ def get_intersect_ranges_tf(map_shape1, map_shape2, offset_px):
         map1_indices, map2_indices.
         Both of shape (H',W',2), containing indices into the map arrays,
         suitable for passing into tf.gather_nd() and similar.
+        The tensors of indices are both empty if there is no intersect.
     """
     size1 = tf.gather(map_shape1, (1, 0))
     size2 = tf.gather(map_shape2, (1, 0))
@@ -986,33 +986,31 @@ def get_intersect_ranges_tf(map_shape1, map_shape2, offset_px):
     start2 = tf.maximum([0, 0], -offset_px)
     end2 = tf.minimum(size2, size1 - offset_px)
 
-    def valid_ranges():
-        # Generate valid ranges for each map
-        # result #1: (H',) x int and (W',) x int
-        map1_row_indices = tf.range(start1[1], end1[1])
-        map1_col_indices = tf.range(start1[0], end1[0])
-        map2_row_indices = tf.range(start2[1], end2[1])
-        map2_col_indices = tf.range(start2[0], end2[0])
+    # Enforce limits
+    start1 = tf.minimum(tf.maximum(start1, [0, 0]), size1)
+    end1 = tf.minimum(tf.maximum(end1, [0, 0]), size1)
+    start2 = tf.minimum(tf.maximum(start2, [0, 0]), size2)
+    end2 = tf.minimum(tf.maximum(end2, [0, 0]), size2)
 
-        # Compute (row,col) meshgrid
-        # result #1: 2 x (H',W') x int
-        map1_row_indices, map1_col_indices = tf.meshgrid(map1_row_indices, map1_col_indices, indexing='ij')
-        map2_row_indices, map2_col_indices = tf.meshgrid(map2_row_indices, map2_col_indices, indexing='ij')
+    # Generate per-axis ranges for each map
+    # result #1: (H',) x int and (W',) x int
+    # (empty if no intersection)
+    map1_row_indices = tf.range(start1[1], end1[1])
+    map1_col_indices = tf.range(start1[0], end1[0])
+    map2_row_indices = tf.range(start2[1], end2[1])
+    map2_col_indices = tf.range(start2[0], end2[0])
 
-        # Stack
-        # result #1: (H',W',2) x int
-        map1_indices = tf.stack([map1_row_indices, map1_col_indices], axis=-1)
-        map2_indices = tf.stack([map2_row_indices, map2_col_indices], axis=-1)
+    # Compute (row,col) meshgrid
+    # result #1: 2 x (H',W') x int
+    map1_row_indices, map1_col_indices = tf.meshgrid(map1_row_indices, map1_col_indices, indexing='ij')
+    map2_row_indices, map2_col_indices = tf.meshgrid(map2_row_indices, map2_col_indices, indexing='ij')
 
-        return map1_indices, map2_indices
+    # Stack
+    # result #1: (H',W',2) x int
+    map1_indices = tf.stack([map1_row_indices, map1_col_indices], axis=-1)
+    map2_indices = tf.stack([map2_row_indices, map2_col_indices], axis=-1)
 
-    def empty_ranges():
-        # Return empty tensors for no intersection case
-        empty_tensor = tf.constant([[]], dtype=tf.int32)
-        return empty_tensor, empty_tensor
-
-    # Check if there is any overlap (if end1 - start1 <= 0, no intersection)
-    return tf.cond(tf.reduce_any(end1 - start1 <= 0), empty_ranges, valid_ranges)
+    return map1_indices, map2_indices
 
 
 def _map_shape(map_or_shape: Any):
