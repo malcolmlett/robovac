@@ -591,7 +591,7 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
 
     Return:
       (locations, orientations, lds_maps, semantic_maps), where:
-        locations/orientation - physical locations and orientations of agent
+        locations/orientation - float32, physical locations and orientations of agent
         lds_maps - LDS maps taken by agent at those locations
         semantic_maps - predicted semantic maps by model from those LDS maps, omitted
           if no model given.
@@ -697,6 +697,7 @@ def _predict_maps(model, lds_maps):
     return tf.cast(semantic_maps, tf.float32)
 
 
+@tf.function
 def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
     """
     Combines a bunch of semantic maps to generate a single cropped input map,
@@ -726,8 +727,9 @@ def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
       semantic_map: (H,W,C)
     """
     # config
-    centre = tf.convert_to_tensor(centre, dtype=tf.float32)
-    size_px = tf.convert_to_tensor(size_px, dtype=tf.int32)
+    centre = tf.cast(centre, dtype=tf.float32)
+    size_px = tf.cast(size_px, dtype=tf.int32)
+    sample_locations = tf.cast(sample_locations, dtype=tf.float32)
     max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
     sampling_mode = kwargs.get('sampling_mode', 'all')
     max_samples = kwargs.get('max_samples', 5)
