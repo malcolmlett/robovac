@@ -913,6 +913,8 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
 
 def get_intersect_ranges(map1, map2, offset_px):
     """
+    Makes life easier when doing computations with partially overlaying maps.
+    Returns the slices in each where they overlap.
     Args:
         map1: tuple or map
             Occupancy map, semantic map, or shape thereof. (H,W) or (H,W,C)
@@ -941,6 +943,50 @@ def get_intersect_ranges(map1, map2, offset_px):
     else:
         # convert to row,col
         return (slice(start1[1], end1[1]), slice(start1[0], end1[0])), (slice(start2[1], end2[1]), slice(start2[0], end2[0]))
+
+
+# TODO add @tf.function
+def get_intersect_ranges_tf(map_shape1, map_shape2, offset_px):
+    """
+    TF AutoGraph compatible equivalent of get_intersect_ranges().
+    Makes life easier when doing computations with partially overlaying maps.
+    Returns the slices in each where they overlap.
+    Args:
+        map_shape1: int tensor
+            Shape of first occupancy map or semantic map (H,W) or (H,W,C)
+        map_shape2: int tensor
+            Shape of second occupancy map or semantic map (H,W) or (H,W,C)
+        offset_px: int tensor, (x,y), unit: pixels.
+            Offset of map2 top-left relative to map1 top-left
+    Returns:
+        ((map1_row_indices, map1_col_indices), (map2_row_indices, map2_col_indices))
+        containing index tensors indexing into the map arrays,
+        or ((None, None), (None, None)) if there's no intersect
+    """
+    size1 = tf.gather(map_shape1, (1, 0))
+    size2 = tf.gather(map_shape2, (1, 0))
+
+    # Compute the intersection ranges for map1 and map2
+    start1 = tf.maximum([0, 0], offset_px)
+    end1 = tf.minimum(size1, size2 + offset_px)
+    start2 = tf.maximum([0, 0], -offset_px)
+    end2 = tf.minimum(size2, size1 - offset_px)
+
+    def valid_ranges():
+        # Generate valid ranges for each map
+        map1_row_indices = tf.range(start1[1], end1[1])
+        map1_col_indices = tf.range(start1[0], end1[0])
+        map2_row_indices = tf.range(start2[1], end2[1])
+        map2_col_indices = tf.range(start2[0], end2[0])
+        return (map1_row_indices, map1_col_indices), (map2_row_indices, map2_col_indices)
+
+    def empty_ranges():
+        # Return empty tensors for no intersection case
+        empty_tensor = tf.constant([], dtype=tf.int32)
+        return (empty_tensor, empty_tensor), (empty_tensor, empty_tensor)
+
+    # Check if there is any overlap (if end1 - start1 <= 0, no intersection)
+    return tf.cond(tf.reduce_any(end1 - start1 <= 0), empty_ranges, valid_ranges)
 
 
 def _map_shape(map_or_shape: Any):
