@@ -816,6 +816,7 @@ def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
 # Thus p(unobservable)
 #    = 1 - p(observable)
 #    = 1 - max{i} p(observed|Si)
+@tf.function
 def combine_semantic_maps(locs, semantic_maps, **kwargs):
     """
     Overlays and combines semantic maps spanning different positions.
@@ -959,6 +960,7 @@ def get_intersect_ranges(map1, map2, offset_px):
         return (slice(start1[1], end1[1]), slice(start1[0], end1[0])), (slice(start2[1], end2[1]), slice(start2[0], end2[0]))
 
 
+@tf.function
 def get_intersect_ranges_tf(map_shape1, map_shape2, offset_px):
     """
     TF AutoGraph compatible equivalent of get_intersect_ranges().
