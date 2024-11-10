@@ -82,7 +82,7 @@ __OBSTRUCTION_IDX__ = 1
 __UNKNOWN_IDX__ = 2
 
 
-def slam_model(map_shape, conv_filters, adlo_units, **kwargs):
+def slam_model(map_shape, conv_filters=32, adlo_units=256, **kwargs):
     """
     Constructs a basic UNet model.
 
