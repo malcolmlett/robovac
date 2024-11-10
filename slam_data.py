@@ -46,6 +46,7 @@ import map_from_lds_train_data
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
+import math
 import tqdm
 from typing import Any
 
@@ -1211,6 +1212,38 @@ def show_data_sample(input_map, lds_map, output_map, adlo, metadata=None):
     plt.title('Output Map')
     plt.imshow(output_map, cmap='gray')
     plt.axis('off')
+    plt.show()
+
+
+def show_input_maps(dataset, num=5):
+    """
+    Compact version of show_dataset() that only shows the input_maps.
+    Useful when showing revised datasets during training.
+    Args:
+        dataset: TF Dataset
+            With/without batch().
+            With entries in either of the following form:
+                ((input_map, lds_map), (output_map, output_adlo), metadata)
+                ((input_map, lds_map), (output_map, output_adlo))
+        num: int
+            Number of input_maps to show.
+            If the dataset has already been batched, won't show more than one batch of images.
+    """
+    plt.figure(figsize=(10, 2))
+
+    if dataset.element_spec[0][0].shape.ndims <= 3:
+        dataset = dataset.batch(num)
+
+    # max 5 columns per row
+    rows = math.ceil(num / 5)
+    cols = max(5, num)
+
+    for entry in dataset.take(1):
+        input_map = entry[0][0]
+        for i in range(num):
+            plt.subplot(rows, cols, i+1)
+            plt.imshow(input_map[i])
+            plt.axis('off')
     plt.show()
 
 
