@@ -489,6 +489,87 @@ def get_location_range(semantic_map, exclude_border=False, **kwargs):
     return low_px * pixel_size, high_px * pixel_size
 
 
+class DatasetRevisor:
+    """
+    Supports curriculum learning where the model itself is used to regenerate new
+    input maps within the training data. Intended to be used within a custom training
+    loop that revises the dataset every few epochs.
+    """
+
+    # TODO update to a list of labelled floorplans
+    def __init__(self, floorplan, model, **kwargs):
+        """
+        Args:
+            floorplan: ground-truth semantic map of entire floor.
+            model: model to use for prediction
+        Keyword args:
+          pixel_size: the usual
+          max_distance: the usual
+        """
+        self.floorplan = floorplan
+        self.model = model
+        self.pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+        self.max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
+
+        self._sample_locations = None
+        self._sample_maps = None
+
+    def apply(self, dataset):
+        """
+        Applies the revision process against the supplied dataset, returning a new
+        dataset with revised contents.
+        Args:
+            dataset: input dataset with entries of form:
+                ((input_map, lds_map), (map_output, adlo_output), metadata).
+        Returns:
+            revised dataset with same structure as input dataset.
+        """
+        self.prepare()
+
+        return dataset.map(map)
+
+    def prepare(self):
+        """
+        Performs pre-computation steps.
+        Takes a number of LDS samples around the entire floorplan and uses
+        the model to convert to semantic map predictions. These are cached
+        and used while revising the dataset.
+        """
+        sample_locations, _, _, sample_maps = take_samples_covering_map(
+            self.floorplan, self.model,
+            sampling_mode='random',
+            pixel_size=self.pixel_size,
+            max_distance=self.max_distance)
+        self._sample_locations = sample_locations
+        self._sample_maps = sample_maps
+
+    @tf.function
+    def map(self, inputs, outputs, metadata):
+        """
+        Passed as a function to TF.Dataset.map()
+        """
+        (input_map, lds_map) = inputs
+        (output_map, output_adlo) = outputs
+
+        # skip if input_map is blanked out
+        unknown_min = tf.reduce_min(input_map[..., __UNKNOWN_IDX__])
+        if unknown_min == 1.0:
+            return (input_map, lds_map), (output_map, output_adlo), metadata
+
+        map_centre = metadata[2:4]  # x,y, units: physical
+        map_orientation = metadata[4]
+        size_px = input_map.shape[0:2]
+        tf.debugging.assert_equal(
+            map_orientation, 0.0,
+            message=f"Only supports zero-degrees oriented maps, found: {map_orientation}")
+
+        new_input_map = pre_sampled_crop(
+            map_centre, size_px, self._sample_locations, self._sample_maps,
+            sampling_mode='centre-first', max_samples=5)
+
+        return (new_input_map, lds_map), (output_map, output_adlo), metadata
+
+
 def take_samples_covering_map(semantic_map, model=None, **kwargs):
     """
     Generates a bunch of sample points and LDS maps to cover the area of the given map.
@@ -511,7 +592,7 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
 
     Return:
       (locations, orientations, lds_maps, semantic_maps), where:
-        locations/orientation - physical locations and orientations of agent
+        locations/orientation - float32, physical locations and orientations of agent
         lds_maps - LDS maps taken by agent at those locations
         semantic_maps - predicted semantic maps by model from those LDS maps, omitted
           if no model given.
@@ -534,12 +615,12 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
 
     # Generate sample points
     if sampling_mode == 'random':
-        locs = np.random.uniform(map_range_low, map_range_high, size=(target_count, 2))
-        orientations = np.random.uniform(-np.pi, np.pi, size=(target_count,))
+        locs = np.random.uniform(map_range_low, map_range_high, size=(target_count, 2)).astype(np.float32)
+        orientations = np.random.uniform(-np.pi, np.pi, size=(target_count,)).astype(np.float32)
     elif sampling_mode == 'grid':
         x, y = np.meshgrid(np.arange(start=map_range_low[0], stop=map_range_high[0], step=dist),
                            np.arange(start=map_range_low[1], stop=map_range_high[1], step=dist))
-        locs = np.stack((x.flatten(), y.flatten()), axis=1)
+        locs = np.stack((x.flatten(), y.flatten()), axis=1).astype(np.float32)
         orientations = np.zeros(shape=(locs.shape[0],), dtype=np.float32)
     else:
         raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
@@ -617,6 +698,7 @@ def _predict_maps(model, lds_maps):
     return tf.cast(semantic_maps, tf.float32)
 
 
+@tf.function
 def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
     """
     Combines a bunch of semantic maps to generate a single cropped input map,
@@ -646,44 +728,47 @@ def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
       semantic_map: (H,W,C)
     """
     # config
-    centre = np.array(centre)
-    size_px = np.array(size_px)
+    centre = tf.cast(centre, dtype=tf.float32)
+    size_px = tf.cast(size_px, dtype=tf.int32)
+    sample_locations = tf.cast(sample_locations, dtype=tf.float32)
     max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
     sampling_mode = kwargs.get('sampling_mode', 'all')
     max_samples = kwargs.get('max_samples', 5)
 
     # identify samples to use
-    distances = np.linalg.norm(centre - sample_locations, axis=1)
-    target_sample_count = np.random.randint(1, max_samples + 1)
+    distances = tf.norm(centre - sample_locations, axis=1)
+    target_sample_count = tf.random.uniform([], minval=1, maxval=max_samples + 1, dtype=tf.int32)
+
     if sampling_mode == 'all':
         # pick all with any overlap at all
-        sample_indices = np.arange(len(sample_locations))[distances <= max_distance * 2]
+        sample_indices = tf.where(distances <= max_distance * 2)[:, 0]
     elif sampling_mode == 'centre-first':
-        centre_idx = np.argmin(distances)
+        centre_idx = tf.argmin(distances)
 
         # choose from the set with significant overlap
-        available_indices = np.arange(len(sample_locations))[distances <= max_distance]
-        available_indices = available_indices[available_indices != centre_idx]
-        sample_indices = np.random.choice(available_indices, size=min(target_sample_count - 1, len(available_indices)),
-                                          replace=False)
+        available_indices = tf.where(distances <= max_distance)[:, 0]
+        available_indices = tf.boolean_mask(available_indices, available_indices != centre_idx)
+        num_choices = tf.minimum(target_sample_count - 1, tf.shape(available_indices)[0])
+        sample_indices = tf.random.shuffle(available_indices)[:num_choices]
 
         # final result is centre plus randomly chosen ones
-        sample_indices = np.append(sample_indices, centre_idx)
+        sample_indices = tf.concat([sample_indices, [centre_idx]], axis=0)
     elif sampling_mode == 'uniform':
         # choose from the set with sufficient overlap
-        available_indices = np.arange(len(sample_locations))[distances <= max_distance * 1.5]
-        sample_indices = np.random.choice(available_indices, size=min(target_sample_count, len(available_indices)),
-                                          replace=False)
+        available_indices = tf.where(distances <= max_distance * 1.5)[:, 0]
+        num_choices = tf.minimum(target_sample_count, tf.shape(available_indices)[0])
+        sample_indices = tf.random.shuffle(available_indices)[:num_choices]
     else:
         raise ValueError(f"Unknown sampling mode: {sampling_mode}")
-    sample_indices = sample_indices.astype(int)
 
     # combine chosen samples
-    centre_px = np.round(centre / lds.__PIXEL_SIZE__).astype(int)
+    centre_px = tf.cast(tf.round(centre / lds.__PIXEL_SIZE__), tf.int32)
     window_radius_px = (size_px - 1) // 2
-    output_range_px = (centre_px[0] - window_radius_px[0], centre_px[1] - window_radius_px[1], size_px[0], size_px[1])
+    output_range_px = tf.stack([centre_px[0] - window_radius_px[0], centre_px[1] - window_radius_px[1], size_px[0], size_px[1]])
+
     combined_map, _ = combine_semantic_maps(
-        sample_locations[sample_indices], tf.gather(sample_maps, sample_indices),
+        tf.gather(sample_locations, sample_indices),
+        tf.gather(sample_maps, sample_indices),
         output_range_px=output_range_px, **kwargs)
     return combined_map
 
@@ -736,6 +821,7 @@ def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
 # Thus p(unobservable)
 #    = 1 - p(observable)
 #    = 1 - max{i} p(observed|Si)
+@tf.function
 def combine_semantic_maps(locs, semantic_maps, **kwargs):
     """
     Overlays and combines semantic maps spanning different positions.
@@ -756,11 +842,11 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
 
     Keyword args:
         pixel_size: usual meaning
-        output_range: float array, (x1, y1, w, h), unit: physical.
+        output_range: float tensor, (x1, y1, w, h), unit: physical.
           Location span of output map, from start of centre of its top-left pixel.
           If not provided, output map is computed to span the union of the
           maps provided.
-        output_range_px: float array, (x1, y1, w, h), unit: pixels.
+        output_range_px: float tensor, (x1, y1, w, h), unit: pixels.
           Same as output_range, but in pixel units relative to the original
           floorplan pixel coordinates. At most one should be provided.
 
@@ -775,64 +861,80 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
     output_range_apu = kwargs.get('output_range')  # absolute physical units
     output_range_apx = kwargs.get('output_range_px')  # absolute pixel units
-    window_size_px = np.array([semantic_maps.shape[2], semantic_maps.shape[1]])
+    window_size_px = tf.gather(tf.shape(semantic_maps), (2,1))  # (N,H,W,3) -> [w,h]
 
     # compute coordinates of output map
     # - offset_px   - px coord of centre of top-left most window
-    # - out_size_px - px width,height
+    # - out_shape   - px height,width
     if output_range_apx is not None:
-        output_range_apx = np.round(output_range_apx).astype(int)
+        output_range_apx = tf.cast(tf.round(output_range_apx), tf.int32)
     elif output_range_apu is not None:
-        output_range_apx = np.round(np.array(output_range_apu) / pixel_size).astype(int)
+        output_range_apx = tf.cast(tf.round(output_range_apu / pixel_size), tf.int32)
 
-    half_window_px = (window_size_px - 1) // 2
+    half_window_px = (window_size_px - 1) // 2  # (2,) x int32
     if output_range_apx is not None:
-        offset_px = (output_range_apx[0:2] + half_window_px).astype(int)
-        out_size_px = output_range_apx[2:4]
+        offset_px = tf.gather(output_range_apx, (0,1)) + half_window_px
+        out_shape = tf.gather(output_range_apx, (2,3))  # (h,w)
     else:
-        min_locs_px = np.round(np.min(locs, axis=0) / pixel_size) - half_window_px
-        max_locs_px = np.round(np.max(locs, axis=0) / pixel_size) - half_window_px + window_size_px
-        offset_px = (min_locs_px + half_window_px).astype(int)
-        out_size_px = (max_locs_px - min_locs_px).astype(int)
-    location_start = (offset_px - half_window_px) * pixel_size
+        min_locs_px = tf.cast(tf.round(tf.reduce_min(locs, axis=0) / pixel_size), tf.int32) - half_window_px
+        max_locs_px = tf.cast(tf.round(tf.reduce_max(locs, axis=0) / pixel_size), tf.int32) - half_window_px + window_size_px
+        offset_px = min_locs_px + half_window_px  # (2,) x int32
+        out_shape = tf.gather(max_locs_px - min_locs_px, (1,0))  # (h,w)
+    location_start = tf.cast(offset_px - half_window_px, tf.float32) * pixel_size  # (2,) x float32
+
+    # Initialize tensors for accumulation
+    max_observed = tf.zeros(out_shape, dtype=tf.float32)
+    sum_observed = tf.zeros(out_shape, dtype=tf.float32)
+    out_sum = tf.zeros(tf.concat([out_shape, tf.constant([3], tf.int32)], axis=0), dtype=tf.float32)
 
     # compute max and sums across entire map
     # also compute sum over samples
-    max_observed = np.zeros((out_size_px[1], out_size_px[0]))
-    sum_observed = np.zeros((out_size_px[1], out_size_px[0]))
-    out_sum = np.zeros((out_size_px[1], out_size_px[0], 3))
-    for i in range(locs.shape[0]):
-        this_map = semantic_maps[i]
-        start_px = np.round(locs[i] / pixel_size).astype(int) - offset_px  # window-centre apu -> top-left px
-        observed = np.sum(this_map[..., 0:2], axis=-1)
-        out_slices, map_slices = get_intersect_ranges((out_size_px[1], out_size_px[0]), this_map.shape[0:2], start_px)
+    def process_map(i, out_sum, sum_observed, max_observed):
+        this_map = tf.gather(semantic_maps, i, axis=0)  # (H,W,C)
+        start_px = tf.cast(tf.round(locs[i] / pixel_size), tf.int32) - offset_px  # window-centre apu -> top-left px
+        observed = tf.reduce_sum(tf.gather(this_map, indices=(0, 1), axis=-1), axis=-1)  # (H,W) x 0..1 prob
+        out_indices, map_indices = get_intersect_ranges_tf(out_shape, tf.shape(this_map), start_px)
 
+        # Accumulate values
         # sum{i} p(floor|Si)
         # sum{i} p(wall|Si)
-        out_sum[out_slices] = np.add(out_sum[out_slices], this_map[map_slices])
+        # out_sum[out_slices] = np.add(out_sum[out_slices], this_map[map_slices])
+        out_sum = tf.tensor_scatter_nd_add(out_sum, out_indices, tf.gather_nd(this_map, map_indices))
 
         # sum p(observed|Sj) = normalizer
-        sum_observed[out_slices] = np.add(sum_observed[out_slices], observed[map_slices])
+        # sum_observed[out_slices] = np.add(sum_observed[out_slices], observed[map_slices])
+        sum_observed = tf.tensor_scatter_nd_add(sum_observed, out_indices, tf.gather_nd(observed, map_indices))
 
         # max p(observed|Sk) = p(observable)
-        max_observed[out_slices] = np.maximum(max_observed[out_slices], observed[map_slices])
+        # max_observed[out_slices] = np.maximum(max_observed[out_slices], observed[map_slices])
+        max_observed = tf.tensor_scatter_nd_max(max_observed, out_indices, tf.gather_nd(observed, map_indices))
 
-    # compute final output map
+        return i + 1, out_sum, sum_observed, max_observed
+
+    # Loop over all semantic maps and combine
+    i = tf.constant(0)
+    cond = lambda i, out_sum, sum_observed, max_observed: tf.less(i, tf.shape(locs)[0])
+    _, out_sum, sum_observed, max_observed = tf.while_loop(cond, process_map, [i, out_sum, sum_observed, max_observed])
+
+    # Compute the final output map
     # - p(floor|observable) = sum{i} p(floor|Si) / sum p(observed|Sj) * max p(observed|Sk)
     # - p(wall |observable) = sum{i} p(wall |Si) / sum p(observed|Sj) * max p(observed|Sk)
-    sum_observed[sum_observed == 0] = 1e-7  # avoid divide-by-zero (max_observed will be zero)
-    out = out_sum / sum_observed[..., np.newaxis] * max_observed[..., np.newaxis]
+    sum_observed = tf.where(sum_observed == 0, tf.constant(1e-8, dtype=tf.float32), sum_observed)  # avoid div-by-zero
+    out = out_sum / sum_observed[..., tf.newaxis] * max_observed[..., tf.newaxis]
 
     # - p(unobservable) = 1 - max{i} p(observed|Si)
-    out[..., __UNKNOWN_IDX__] = 1 - max_observed
+    out_unknown = tf.expand_dims(1 - max_observed, axis=-1)
 
-    # cast final result to float32
-    # (prior computations are in float64 by default)
-    return out.astype(np.float32), location_start
+    # combine
+    out = tf.cast(tf.concat([out[..., 0:2], out_unknown], axis=-1), tf.float32)
+
+    return out, location_start
 
 
 def get_intersect_ranges(map1, map2, offset_px):
     """
+    Makes life easier when doing computations with partially overlaying maps.
+    Returns the slices in each where they overlap.
     Args:
         map1: tuple or map
             Occupancy map, semantic map, or shape thereof. (H,W) or (H,W,C)
@@ -861,6 +963,61 @@ def get_intersect_ranges(map1, map2, offset_px):
     else:
         # convert to row,col
         return (slice(start1[1], end1[1]), slice(start1[0], end1[0])), (slice(start2[1], end2[1]), slice(start2[0], end2[0]))
+
+
+@tf.function
+def get_intersect_ranges_tf(map_shape1, map_shape2, offset_px):
+    """
+    TF AutoGraph compatible equivalent of get_intersect_ranges().
+    Makes life easier when doing computations with partially overlaying maps.
+    Returns indices in each where they overlap.
+    Args:
+        map_shape1: int tensor
+            Shape of first occupancy map or semantic map (H,W) or (H,W,C)
+        map_shape2: int tensor
+            Shape of second occupancy map or semantic map (H,W) or (H,W,C)
+        offset_px: int tensor, (x,y), unit: pixels.
+            Offset of map2 top-left relative to map1 top-left
+    Returns:
+        map1_indices, map2_indices.
+        Both of shape (H',W',2), containing indices into the map arrays,
+        suitable for passing into tf.gather_nd() and similar.
+        The tensors of indices are both empty if there is no intersect.
+    """
+    size1 = tf.gather(map_shape1, (1, 0))
+    size2 = tf.gather(map_shape2, (1, 0))
+
+    # Compute the intersection ranges for map1 and map2
+    start1 = tf.maximum([0, 0], offset_px)
+    end1 = tf.minimum(size1, size2 + offset_px)
+    start2 = tf.maximum([0, 0], -offset_px)
+    end2 = tf.minimum(size2, size1 - offset_px)
+
+    # Enforce limits
+    start1 = tf.minimum(tf.maximum(start1, [0, 0]), size1)
+    end1 = tf.minimum(tf.maximum(end1, [0, 0]), size1)
+    start2 = tf.minimum(tf.maximum(start2, [0, 0]), size2)
+    end2 = tf.minimum(tf.maximum(end2, [0, 0]), size2)
+
+    # Generate per-axis ranges for each map
+    # result #1: (H',) x int and (W',) x int
+    # (empty if no intersection)
+    map1_row_indices = tf.range(start1[1], end1[1])
+    map1_col_indices = tf.range(start1[0], end1[0])
+    map2_row_indices = tf.range(start2[1], end2[1])
+    map2_col_indices = tf.range(start2[0], end2[0])
+
+    # Compute (row,col) meshgrid
+    # result #1: 2 x (H',W') x int
+    map1_row_indices, map1_col_indices = tf.meshgrid(map1_row_indices, map1_col_indices, indexing='ij')
+    map2_row_indices, map2_col_indices = tf.meshgrid(map2_row_indices, map2_col_indices, indexing='ij')
+
+    # Stack
+    # result #1: (H',W',2) x int
+    map1_indices = tf.stack([map1_row_indices, map1_col_indices], axis=-1)
+    map2_indices = tf.stack([map2_row_indices, map2_col_indices], axis=-1)
+
+    return map1_indices, map2_indices
 
 
 def _map_shape(map_or_shape: Any):
