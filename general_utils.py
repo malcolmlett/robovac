@@ -1,12 +1,19 @@
 import matplotlib.pyplot as plt
 
 
+# Implementation note:
+# When supplied an aggregate model history, the model_history.epoch parameter is only populated
+# with epoch numbers from the most recent training, so it isn't useful.
 def display_history(model_history):
     """
     Flexibly supports different losses and metrics.
     Applies some heuristics to group the losses together onto a log plot, and the other metrics
     on a linear plot.
-    :param model_history:
+
+    Works with aggregate histories that have been built up over multiple model.fit() calls.
+
+    Args:
+      model_history - History callback object
     """
 
     # identify "losses" vs other metrics
@@ -18,7 +25,7 @@ def display_history(model_history):
         plt.subplot(1, 2, 1)
         plt.title("Loss")
         for key in loss_keys:
-            plt.plot(model_history.epoch, model_history.history[key], label=key)
+            plt.plot(model_history.history[key], label=key)
         plt.legend()
         plt.yscale('log')
         plt.xlabel('Epoch')
@@ -27,7 +34,7 @@ def display_history(model_history):
         plt.subplot(1, 2, 2)
         plt.title("Metrics")
         for key in metric_keys:
-            plt.plot(model_history.epoch, model_history.history[key], label=key)
+            plt.plot(model_history.history[key], label=key)
         plt.legend()
         plt.xlabel('Epoch')
 
