@@ -652,25 +652,16 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
     locs_px = np.round(locs_fpx).astype(int)
     locs_alignment_offset_fpx = locs_fpx - locs_px  # true centre relative to window centre
 
-    # FIXME WORKAROUND
-    # Somehow I'm getting 159x159 windows instead of 149x149 that I've trained the model on.
-    # Need to figure out what's going on here.
-    def clip_to_size(map):
-        #target_shape = np.array([149, 149])
-        #clip_start = (map.shape[0:2] - target_shape) // 2
-        #clip_end = clip_start + target_shape
-        #return map[clip_start[0]:clip_end[0], clip_start[1]:clip_end[1], ...]
-        return map
-
     # Do LDS map generation
     # - generating the first one first so we can pre-allocate the result array
     print(f"Generating {locs.shape[0]} LDS maps...")
     occupancy_map = semantic_map[..., __OBSTRUCTION_IDX__]
+
     ranges = lds.lds_sample(occupancy_map, locs[0], orientations[0], **kwargs)
     first_map = lds.lds_to_occupancy_map(
         ranges, angle=orientations[0], size_px=window_size_px,
         centre_px=locs_alignment_offset_fpx[0], pixel_size=pixel_size)
-    first_map = clip_to_size(first_map)
+
     lds_maps = np.zeros((locs.shape[0],) + first_map.shape)
     lds_maps[0] = first_map
     for i in range(1, locs.shape[0]):
@@ -678,7 +669,6 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
         lds_map = lds.lds_to_occupancy_map(
             ranges, angle=orientations[i], size_px=window_size_px,
             centre_px=locs_alignment_offset_fpx[i], pixel_size=pixel_size)
-        lds_map = clip_to_size(lds_map)
         lds_maps[i] = lds_map
 
     # Do semantic map generation

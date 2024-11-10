@@ -42,7 +42,7 @@ import numpy as np
 
 # defaults
 # - using mm as the default unit
-__PIXEL_SIZE__ = 44.71   # mm/px
+__PIXEL_SIZE__ = 44.71   # mm/px  ## TODO fix, should be 47.41
 __MIN_DISTANCE__ = 120    # 120mm
 __MAX_DISTANCE__ = 3500   # 3.5m in mm
 __NOISE_RANGES__ = [
