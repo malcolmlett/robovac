@@ -8,6 +8,7 @@ def run_test_suite():
     _map_shape_test()
     get_intersect_ranges_test()
     get_intersect_ranges_tf_test()
+    compute_model_revisement_weight_test()
 
 
 def get_intersect_ranges_test():
@@ -117,3 +118,10 @@ def _map_shape_test():
     assert np.array_equal(_map_shape([1, 2, 3]), np.array([1, 2, 3]))
     assert np.array_equal(_map_shape(np.array([1, 2, 3])), np.array([1, 2, 3]))
     assert np.array_equal(_map_shape(np.zeros((1, 2, 3))), np.array([1, 2, 3]))
+
+
+def compute_model_revisement_weight_test():
+    assert DatasetRevisor.compute_model_revisement_weight(0, 100) == 0.0
+    assert DatasetRevisor.compute_model_revisement_weight(99, 100) == 1.0
+    assert DatasetRevisor.compute_model_revisement_weight(100, 100.0) == 1.0
+    assert DatasetRevisor.compute_model_revisement_weight(200, 100.0) == 1.0

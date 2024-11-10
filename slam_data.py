@@ -587,6 +587,20 @@ class DatasetRevisor:
 
         return (new_input_map, lds_map), (output_map, output_adlo), metadata
 
+    @staticmethod
+    def compute_model_revisement_weight(epoch, target_epochs=100):
+        """
+        Convenience for calculating the weight to supply during construction, depending
+        on the progress through training.
+        Args:
+            epoch - zero-based epoch number
+            target_epochs - number of epochs over which the weight should increase.
+                For epochs after this, the weight is held static at 100%.
+        Returns:
+            float scalar, 0.0 to 1.0 (inclusive).
+        """
+        return min(1.0, epoch/(target_epochs-1))
+
 
 def take_samples_covering_map(semantic_map, model=None, **kwargs):
     """
