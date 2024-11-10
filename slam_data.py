@@ -506,19 +506,26 @@ class DatasetRevisor:
     """
 
     # TODO update to a list of labelled floorplans
-    def __init__(self, floorplan, model, **kwargs):
+    def __init__(self, floorplan, model, weight=1.0, **kwargs):
         """
         Args:
             floorplan: ground-truth semantic map of entire floor.
             model: model to use for prediction
+            weight: float, in range 0.0 to 1.0 (inclusive), default: 1.0
+                If non-one, the existing data within the dataset
+                is combined in a weighted average with the predicted data.
         Keyword args:
           pixel_size: the usual
           max_distance: the usual
         """
+        if weight < 0.0 or weight > 1.0:
+            raise ValueError(f"Weight outside of valid range: {weight}")
+
         self.floorplan = floorplan
         self.model = model
         self.pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
         self.max_distance = kwargs.get('max_distance', lds.__MAX_DISTANCE__)
+        self.weight = weight
 
         self._sample_locations = None
         self._sample_maps = None
@@ -572,9 +579,11 @@ class DatasetRevisor:
             map_orientation, 0.0,
             message=f"Only supports zero-degrees oriented maps, found: {map_orientation}")
 
-        new_input_map = pre_sampled_crop(
+        predicted_input_map = pre_sampled_crop(
             map_centre, size_px, self._sample_locations, self._sample_maps,
             sampling_mode='centre-first', max_samples=5)
+
+        new_input_map = (1-self.weight) * input_map + self.weight * predicted_input_map
 
         return (new_input_map, lds_map), (output_map, output_adlo), metadata
 
