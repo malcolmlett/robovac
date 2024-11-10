@@ -655,10 +655,11 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
     # Somehow I'm getting 159x159 windows instead of 149x149 that I've trained the model on.
     # Need to figure out what's going on here.
     def clip_to_size(map):
-        target_shape = np.array([149, 149])
-        clip_start = (map.shape[0:2] - target_shape) // 2
-        clip_end = clip_start + target_shape
-        return map[clip_start[0]:clip_end[0], clip_start[1]:clip_end[1], ...]
+        #target_shape = np.array([149, 149])
+        #clip_start = (map.shape[0:2] - target_shape) // 2
+        #clip_end = clip_start + target_shape
+        #return map[clip_start[0]:clip_end[0], clip_start[1]:clip_end[1], ...]
+        return map
 
     # Do LDS map generation
     # - generating the first one first so we can pre-allocate the result array
