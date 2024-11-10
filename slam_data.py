@@ -489,6 +489,14 @@ def get_location_range(semantic_map, exclude_border=False, **kwargs):
     return low_px * pixel_size, high_px * pixel_size
 
 
+def for_model_training(inputs, outputs, metadata):
+    """
+    TF Dataset.map() function that translates the dataset into the form needed for model training.
+    Removes the metadata component.
+    """
+    return inputs, outputs
+
+
 class DatasetRevisor:
     """
     Supports curriculum learning where the model itself is used to regenerate new
