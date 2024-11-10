@@ -1248,17 +1248,37 @@ def show_input_maps(dataset, num=5):
 
 def show_predictions(model, dataset, num=5, **kwargs):
     """
-    :param model: slam model
-    :param dataset: slam dataset
-    :param num: number of predictions to show
+    Plots and lists the predictions of the model against some entries from the given dataset.
+    Args:
+        model: trained slam model
+        dataset: a slam dataset
+        num: int, default: 5
+            Number of predictions to show.
     Keyword args:
-        from_logits: (bool) whether model outputs logits, or scaled values otherwise
-        show_classes: (bool) whether to add extra columns for each individual class
+        from_logits: bool, whether model outputs logits, or scaled values otherwise
+        show_classes: bool, whether to add extra columns for each individual class
         flexi: (bool) whether to enable support for more flexible data representations that might
                omit some of the inputs or outputs
+        model_based_inputs: bool, default: False.
+            Whether to use the model to generate map inputs for more realistic outcomes.
+            Generally not compatible with flexi=True as it depends on the dataset being well-formed.
+        floorplan: original floorplan as a semantic amp.
+            Required if model_based_inputs==True.
     """
     flexi = kwargs.get('flexi', False)
+    model_based_inputs = kwargs.get('model_based_inputs', False)
+    floorplan = kwargs.get('floorplan', None)
 
+    # revise dataset from model if requested
+    if model_based_inputs:
+        if floorplan is None:
+            raise ValueError("Must provide floorplan when using model_based_inputs")
+        tf.random.set_seed(0)  # for better chance of comparing things
+        revisor = DatasetRevisor(floorplan, model)
+        revisor.prepare()
+        dataset = dataset.map(revisor.map)
+
+    # show predictions
     if flexi:
         flexi_show_predictions(model, dataset, num, **kwargs)
     else:
