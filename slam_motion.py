@@ -58,7 +58,7 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
     map_window = slam_data.unknown_map(window_size_px)
     known_map_indices, map_window_indices = slam_data.get_intersect_ranges_tf(
         tf.shape(known_map), tf.shape(map_window), start_px)
-    tf.tensor_scatter_nd_update(map_window, map_window_indices, tf.gather_nd(known_map, known_map_indices))
+    map_window = tf.tensor_scatter_nd_update(map_window, map_window_indices, tf.gather_nd(known_map, known_map_indices))
 
     # Generate LDS input from full map
     # - re-use input alignment
@@ -135,7 +135,7 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
 
     # config
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
-    update_mode = kwargs.get('mask_mode', 'mask-merge')
+    update_mode = kwargs.get('update_mode', 'mask-merge')
     window_size_px = tf.gather(tf.shape(update_map), (0, 1))  # (H,W,3) -> [w,h]
     window_radius_px = window_size_px // 2
 
