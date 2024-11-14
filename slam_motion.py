@@ -52,7 +52,7 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
     # - align to known_map pixels, and fill the rest with 'unknown'
     centre_fpx = (location - known_map_start) / pixel_size
     start_fpx = centre_fpx - window_radius_px
-    start_px = np.round(start_fpx).astype(int)
+    start_px = np.round(start_fpx).astype(np.int32)
     loc_alignment_offset_fpx = start_fpx - start_px
 
     map_window = slam_data.unknown_map(window_size_px)
@@ -74,11 +74,10 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
     (map_output, adlo_output) = model.predict((map_input, lds_input))
 
     # Convert to result
-    # TODO cast to float32
-    map_pred = map_output[0]
+    map_pred = tf.math.softmax(map_output[0], axis=-1)
     accept = adlo_output[0][0] >= 0.5
-    delta_location = adlo_output[0][1:3] * window_size_px * pixel_size
-    delta_orientation = adlo_output[0][3] * np.pi
+    delta_location = (adlo_output[0][1:3] * window_size_px * pixel_size).astype(np.float32)
+    delta_orientation = (adlo_output[0][3] * np.pi).astype(np.float32)
 
     return map_pred, accept, delta_location, delta_orientation
 

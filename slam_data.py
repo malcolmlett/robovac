@@ -732,7 +732,7 @@ def unknown_map(window_size_px, **kwargs):
         (H,W,3) semantic map
     """
     # Config
-    default_unknown_value = tf.zeros(__CLASSES__, dtype=np.float32)
+    default_unknown_value = np.zeros(__CLASSES__, dtype=np.float32)
     default_unknown_value[__UNKNOWN_IDX__] = 1
     unknown_value = np.array(kwargs.get('unknown_value', default_unknown_value))
 
