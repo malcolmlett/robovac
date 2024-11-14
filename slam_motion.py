@@ -284,6 +284,7 @@ def create_map_update_weight_mask(window_size_px):
     """
 
     # Create a grid of (x, y) coordinates
+    window_size_px = tf.cast(window_size_px, dtype=tf.float32)
     x = tf.range(window_size_px[0], dtype=tf.float32)
     y = tf.range(window_size_px[1], dtype=tf.float32)
     x_grid, y_grid = tf.meshgrid(x, y)
@@ -294,7 +295,7 @@ def create_map_update_weight_mask(window_size_px):
     distances = tf.sqrt((x_grid - centre_px[0])**2 + (y_grid - centre_px[1])**2)
 
     # Normalize distances by max_distance to get values in the range [0, 1]
-    normalized_distances = tf.cast(distances, tf.float32) / tf.cast(max_dist_px, tf.float32)
+    normalized_distances = distances / max_dist_px
 
     # Create the mask
     inner_band = tf.where(normalized_distances <= 2/3, 1.0, 0.0)
