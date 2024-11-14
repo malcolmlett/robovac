@@ -384,12 +384,12 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
             input_map = input_map * (1.0 - model_weight) + predicted_map * model_weight
     else:
         # all unknown
-        input_map = np.tile(unknown_value, (window_size_px[0], window_size_px[1], 1))
+        input_map = unknown_map(window_size_px, unknown_value=unknown_value)
 
     # generate output map
     if not gen_output_map:
         # don't care: blank map
-        output_map = np.tile(unknown_value, (window_size_px[0], window_size_px[1], 1))
+        output_map = unknown_map(window_size_px, unknown_value=unknown_value)
     elif map_known:
         # map location known: align to map pixels and zero rotation
         output_map = map_from_lds_train_data.rotated_crop(
@@ -713,12 +713,30 @@ def _predict_maps(model, lds_maps):
     Return:
       nd.array (N,W,H,C), predicted semantic maps
     """
-    unknown_value = np.zeros(__CLASSES__, dtype=np.float32)
-    unknown_value[__UNKNOWN_IDX__] = 1
-    unknown_maps = np.tile(unknown_value, tuple(lds_maps.shape) + (1,))
+    window_size_px = [lds_maps.shape[1], lds_maps.shape[2]]
+    unknown_maps = tf.tile(unknown_map(window_size_px), lds_maps.shape[0])
     (semantic_maps, adlos) = model.predict((unknown_maps, lds_maps))
     semantic_maps = tf.math.softmax(semantic_maps, axis=-1)
     return tf.cast(semantic_maps, tf.float32)
+
+
+def unknown_map(window_size_px, **kwargs):
+    """
+    Generates a semantic map of the requested size with all values populated as 'unknown' category.
+    Args:
+        window_size_px: (2,) tuple, list or array x int.
+            Width and height of target map, unit: pixels.
+    Keyword args:
+        unknown_value: (3,) array x float, default: based on __UNKNOWN_IDX__
+    Returns:
+        (H,W,3) semantic map
+    """
+    # Config
+    default_unknown_value = tf.zeros(__CLASSES__, dtype=np.float32)
+    default_unknown_value[__UNKNOWN_IDX__] = 1
+    unknown_value = np.array(kwargs.get('unknown_value', default_unknown_value))
+
+    return np.tile(unknown_value, reps=(window_size_px[1], window_size_px[0], 1))
 
 
 @tf.function
