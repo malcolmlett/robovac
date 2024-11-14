@@ -862,6 +862,10 @@ def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
 # Thus p(unobservable)
 #    = 1 - p(observable)
 #    = 1 - max{i} p(observed|Si)
+#
+# The logic in here is very similar to that of slam_motion.update_map(), particularly the maths,
+# however there are different optimisations at work, so it's hard to combine them.
+# Still best to keep them in sync though.
 @tf.function
 def combine_semantic_maps(locs, semantic_maps, **kwargs):
     """
@@ -902,7 +906,7 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
     output_range_apu = kwargs.get('output_range')  # absolute physical units
     output_range_apx = kwargs.get('output_range_px')  # absolute pixel units
-    window_size_px = tf.gather(tf.shape(semantic_maps), (2,1))  # (N,H,W,3) -> [w,h]
+    window_size_px = tf.gather(tf.shape(semantic_maps), (2, 1))  # (N,H,W,3) -> [w,h]
 
     # compute coordinates of output map
     # - offset_px   - px coord of centre of top-left most window
@@ -914,13 +918,13 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
 
     half_window_px = (window_size_px - 1) // 2  # (2,) x int32
     if output_range_apx is not None:
-        offset_px = tf.gather(output_range_apx, (0,1)) + half_window_px
-        out_shape = tf.gather(output_range_apx, (2,3))  # (h,w)
+        offset_px = tf.gather(output_range_apx, (0, 1)) + half_window_px
+        out_shape = tf.gather(output_range_apx, (2, 3))  # (h,w)
     else:
         min_locs_px = tf.cast(tf.round(tf.reduce_min(locs, axis=0) / pixel_size), tf.int32) - half_window_px
         max_locs_px = tf.cast(tf.round(tf.reduce_max(locs, axis=0) / pixel_size), tf.int32) - half_window_px + window_size_px
         offset_px = min_locs_px + half_window_px  # (2,) x int32
-        out_shape = tf.gather(max_locs_px - min_locs_px, (1,0))  # (h,w)
+        out_shape = tf.gather(max_locs_px - min_locs_px, (1, 0))  # (h,w)
     location_start = tf.cast(offset_px - half_window_px, tf.float32) * pixel_size  # (2,) x float32
 
     # Initialize tensors for accumulation

@@ -82,6 +82,125 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
     return map_pred, accept, delta_location, delta_orientation
 
 
+# The logic in here is very similar to that of slam_data.combine_semantic_maps(), particularly the maths,
+# however there are different optimisations at work, so it's hard to combine them.
+# Still best to keep them in sync though.
+def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, **kwargs):
+    """
+    Overlays a single "update window" map onto an existing map, potentially updating the extents
+    of the existing map. Generally used for adding a predicted map window onto a larger known map.
+
+    The combination is more than a naive average. It acknowledges that
+    an "unknown" state from one semantic map simply means that it hasn't "observed"
+    the state at a given position, while an "unknown" state for the same position
+    across all semantic maps suggests that the position may indeed be "unobservable".
+    Then applies a weighted average to resolve discrepancies between floor vs wall,
+    with samples given weights according to how much they agree with the
+    observable/unobservable outcome.
+
+    Furthermore, it acknowledges that the prediction is accurate only within a certain radius.
+    The rectangular or square predicted map is given a mask that divides its radius into 3 bands and has:
+    * uniform 100% within its inner-most two bands,
+    * 100..0% gradient within its outer band, and
+    * 0% in the corners beyond its outer band.
+
+    Args:
+        semantic_map: (H,W,3)
+            Semantic map to update.
+        semantic_map_start: (2,) float, units: physical
+            Coordinate of centre of top-left pixel on semantic_map.
+        update_map: (H,W,3)
+            New section of map to apply onto semantic_map.
+            Usually a predicted semantic map for the observed window around the agent.
+        update_map_centre: (2,) float, units: physical
+            Coordinates of exact centre of update_map under the same absolute
+            coordinate system as semantic_map_start.
+            Usually the location of agent where it generated the predicted map from.
+            Internally this is rounded in order to align update_map onto the pixels
+            of semantic_map, without doing sub-pixel translations or anti-aliasing.
+
+    Keyword args:
+        pixel_size: usual meaning
+        update_mode: one of 'merge', 'mask-merge', default: 'mask-merge'
+            Not yet supported.
+
+    Returns:
+        (semantic_map, location_start) with semantic map containing the combined results,
+        and the physical location of centre of top-left pixel of the newly updated map.
+    """
+    # TODO apply a centre-surround mask
+
+    # note: internally this functions uses pixel coordinates throughout,
+    # unless otherwise stated
+
+    # config
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    window_size_px = tf.gather(tf.shape(update_map), (0, 1))  # (H,W,3) -> [w,h]
+    window_radius_px = window_size_px // 2
+
+    # convert coordinates to pixels relative to input semantic map
+    # - in physical units: update_map_offset
+    #    = (update_centre - window_radius) - semantic_map_start
+    #    = (update_centre - window_radius_px * PIXEL_SIZE) - semantic_map_start
+    # - then divide everything by PIXEL_SIZE and re-arrange
+    update_map_offset_px = np.round((update_map_centre - semantic_map_start) / pixel_size - window_radius_px)\
+        .astype(np.int32)
+
+    # calculate dimensions of new output map
+    current_size_px = tf.gather(tf.shape(semantic_map), (1, 0))  # (2,) x int32 = (w,h)
+    out_min_extent = tf.minimum([0, 0], update_map_offset_px)  # (2,) x int32 = (x,y)
+    out_max_extent = tf.maximum(current_size_px, current_size_px + update_map_offset_px + window_size_px)
+    out_shape = tf.gather(out_max_extent - out_min_extent, (1, 0))  # (h,w)
+    location_start = semantic_map_start + tf.cast(out_min_extent, tf.float32) * pixel_size  # (2,) x float32
+
+    # Initialize tensors for accumulation
+    max_observed = tf.zeros(out_shape, dtype=tf.float32)
+    sum_observed = tf.zeros(out_shape, dtype=tf.float32)
+    out_sum = tf.zeros(tf.concat([out_shape, tf.constant([3], tf.int32)], axis=0), dtype=tf.float32)
+
+    # compute max and sums across entire map
+    # also compute sum over samples
+    def _add_map(this_map, start_px, _out_sum, _sum_observed, _max_observed):
+        observed = tf.reduce_sum(tf.gather(this_map, indices=(0, 1), axis=-1), axis=-1)  # (H,W) x 0..1 prob
+        out_indices, map_indices = slam_data.get_intersect_ranges_tf(out_shape, tf.shape(this_map), start_px)
+
+        # Accumulate values
+        # sum{i} p(floor|Si)
+        # sum{i} p(wall|Si)
+        # out_sum[out_slices] = np.add(out_sum[out_slices], this_map[map_slices])
+        _out_sum = tf.tensor_scatter_nd_add(_out_sum, out_indices, tf.gather_nd(this_map, map_indices))
+
+        # sum p(observed|Sj) = normalizer
+        # sum_observed[out_slices] = np.add(sum_observed[out_slices], observed[map_slices])
+        _sum_observed = tf.tensor_scatter_nd_add(_sum_observed, out_indices, tf.gather_nd(observed, map_indices))
+
+        # max p(observed|Sk) = p(observable)
+        # max_observed[out_slices] = np.maximum(max_observed[out_slices], observed[map_slices])
+        _max_observed = tf.tensor_scatter_nd_max(_max_observed, out_indices, tf.gather_nd(observed, map_indices))
+
+        return _out_sum, _sum_observed, _max_observed
+
+    # Add source and updated map onto output
+    out_sum, sum_observed, max_observed = _add_map(
+        semantic_map, -out_min_extent, out_sum, sum_observed, max_observed)
+    out_sum, sum_observed, max_observed = _add_map(
+        semantic_map, -out_min_extent, out_sum, sum_observed, max_observed)
+
+    # Compute the final output map
+    # - p(floor|observable) = sum{i} p(floor|Si) / sum p(observed|Sj) * max p(observed|Sk)
+    # - p(wall |observable) = sum{i} p(wall |Si) / sum p(observed|Sj) * max p(observed|Sk)
+    sum_observed = tf.where(sum_observed == 0, tf.constant(1e-8, dtype=tf.float32), sum_observed)  # avoid div-by-zero
+    out = out_sum / sum_observed[..., tf.newaxis] * max_observed[..., tf.newaxis]
+
+    # - p(unobservable) = 1 - max{i} p(observed|Si)
+    out_unknown = tf.expand_dims(1 - max_observed, axis=-1)
+
+    # combine
+    out = tf.cast(tf.concat([out[..., 0:2], out_unknown], axis=-1), tf.float32)
+
+    return out, location_start
+
+
 def get_contour_pxcoords(file, **kwargs):
     """
     Extracts the raw trajectory contour from the image file.
