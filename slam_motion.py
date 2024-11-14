@@ -173,7 +173,7 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
     # Compute weight mask
     if update_mode == 'merge':
         mask = None
-    elif update_mode == 'mask_merge':
+    elif update_mode == 'mask-merge':
         mask = create_map_update_weight_mask(window_size_px)
     else:
         raise ValueError(f"Unknown update_mode: {update_mode}")
@@ -187,9 +187,6 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
         #print(f"observed: {observed.shape} = {tf.reduce_min(observed)} - {tf.reduce_max(observed)}")
         #print(f"out_indices: {out_indices.shape} = {tf.reduce_min(out_indices, axis=(0,1))} - {tf.reduce_max(out_indices, axis=(0,1))}")
         #print(f"map_indices: {map_indices.shape} = {tf.reduce_min(map_indices, axis=(0,1))} - {tf.reduce_max(map_indices, axis=(0,1))}")
-
-        #selected = tf.gather_nd(observed, map_indices)
-        #print(f"selected: {selected.shape}, {tf.reduce_min(selected)} - {tf.reduce_max(selected)}")
 
         if mask is None:
             # Accumulate values
@@ -213,22 +210,37 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
             # - the latter causes the existing _max_observed to be scaled down, and then we just do a normal
             #   max on the result, solving how to do a "weighted max".
 
-            masked_this_map = this_map * mask + slam_data.unknown_map(window_size_px) * (1-mask)  # (H,W,3)
+            mask_3d = tf.expand_dims(mask, axis=-1)
+            masked_this_map = this_map * mask_3d + slam_data.unknown_map(window_size_px) * (1-mask_3d)  # (H,W,3)
             masked_observed = observed * mask  # (H,W)
 
-            masked_out_sum = tf.gather_nd(_out_sum, out_indices) * (1-mask) +\
-                                          slam_data.unknown_map(window_size_px) * mask
-            tf.tensor_scatter_nd_update(_out_sum, out_indices, masked_out_sum + masked_this_map)
+            #print(f"masked_this_map: {tf.reduce_min(masked_this_map, axis=(0,1))} - {tf.reduce_max(masked_this_map, axis=(0,1))}")
+            #print(f"masked_observed: {tf.reduce_min(masked_observed)} - {tf.reduce_max(masked_observed)}")
+
+            masked_out_sum = tf.gather_nd(_out_sum, out_indices) * (1-mask_3d) +\
+                                          slam_data.unknown_map(window_size_px) * mask_3d
+            _out_sum = tf.tensor_scatter_nd_update(
+                  _out_sum, out_indices,
+                  masked_out_sum + masked_this_map)
 
             masked_sum_observed = tf.gather_nd(_sum_observed, out_indices) * (1-mask)
-            _sum_observed = tf.tensor_scatter_nd_add(_sum_observed, out_indices,
-                                                     tf.gather_nd(masked_sum_observed, map_indices))
+            _sum_observed = tf.tensor_scatter_nd_update(
+                  _sum_observed, out_indices,
+                  masked_sum_observed + masked_observed)
 
+            # weighted-max: a weird concept
+            # in the middle of the overlap between the gradient sections,
+            # the masks make the highest max = 0.5, so divide by that to scale back
             masked_max_observed = tf.gather_nd(_max_observed, out_indices) * (1-mask)
-            tf.tensor_scatter_nd_update(_max_observed, out_indices,
-                                        tf.maximum(masked_max_observed, masked_observed))
+            rescale = tf.maximum(mask, 1-mask)
+            _max_observed = tf.tensor_scatter_nd_update(
+                  _max_observed, out_indices,
+                  tf.maximum(masked_max_observed, masked_observed) / rescale)
 
-        #print(f"out_sum:      {_out_sum.shape}, {tf.reduce_min(_out_sum)} - {tf.reduce_max(_out_sum)}")
+            #plt.imshow(_max_observed)
+            #plt.colorbar()
+
+        #print(f"out_sum:      {_out_sum.shape}, {tf.reduce_min(_out_sum, axis=(0,1))} - {tf.reduce_max(_out_sum, axis=(0,1))}")
         #print(f"sum_observed: {_sum_observed.shape}, {tf.reduce_min(_sum_observed)} - {tf.reduce_max(_sum_observed)}")
         #print(f"max_oberved:  {_max_observed.shape}, {tf.reduce_min(_max_observed)} - {tf.reduce_max(_max_observed)}")
 
