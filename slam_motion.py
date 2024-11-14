@@ -135,60 +135,114 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
 
     # config
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    update_mode = kwargs.get('mask_mode', 'mask-merge')
     window_size_px = tf.gather(tf.shape(update_map), (0, 1))  # (H,W,3) -> [w,h]
     window_radius_px = window_size_px // 2
+
+    #print(f"semantic_map: {semantic_map.shape} @ {semantic_map_start}")
+    #print(f"update_map: {update_map.shape} @ {update_map_centre} = {update_map_centre - tf.cast(window_radius_px, tf.float32) * pixel_size}")
 
     # convert coordinates to pixels relative to input semantic map
     # - in physical units: update_map_offset
     #    = (update_centre - window_radius) - semantic_map_start
     #    = (update_centre - window_radius_px * PIXEL_SIZE) - semantic_map_start
     # - then divide everything by PIXEL_SIZE and re-arrange
-    update_map_offset_px = np.round((update_map_centre - semantic_map_start) / pixel_size - window_radius_px)\
-        .astype(np.int32)
+    update_map_offset_px = np.round((update_map_centre - semantic_map_start) / pixel_size).astype(np.int32)\
+       - window_radius_px
+    #print(f"update_map_offset_px: {update_map_offset_px}")
 
     # calculate dimensions of new output map
     current_size_px = tf.gather(tf.shape(semantic_map), (1, 0))  # (2,) x int32 = (w,h)
     out_min_extent = tf.minimum([0, 0], update_map_offset_px)  # (2,) x int32 = (x,y)
-    out_max_extent = tf.maximum(current_size_px, current_size_px + update_map_offset_px + window_size_px)
+    out_max_extent = tf.maximum(current_size_px, update_map_offset_px + window_size_px)
     out_shape = tf.gather(out_max_extent - out_min_extent, (1, 0))  # (h,w)
     location_start = semantic_map_start + tf.cast(out_min_extent, tf.float32) * pixel_size  # (2,) x float32
+    #print(f"current_size_px: {current_size_px}")
+    #print(f"out extent: {out_min_extent} - {out_max_extent} -> out_shape: {out_shape}")
+    #print(f"location_start: {location_start}")
+
+    # Revise update_map location relative to output map
+    update_map_offset_px -= out_min_extent
+    #print(f"update_map_offset_px: {update_map_offset_px} (after revision)")
 
     # Initialize tensors for accumulation
     max_observed = tf.zeros(out_shape, dtype=tf.float32)
     sum_observed = tf.zeros(out_shape, dtype=tf.float32)
     out_sum = tf.zeros(tf.concat([out_shape, tf.constant([3], tf.int32)], axis=0), dtype=tf.float32)
 
+    # Compute weight mask
+    if update_mode == 'merge':
+        mask = None
+    elif update_mode == 'mask_merge':
+        mask = create_map_update_weight_mask(window_size_px)
+    else:
+        raise ValueError(f"Unknown update_mode: {update_mode}")
+
     # compute max and sums across entire map
     # also compute sum over samples
-    def _add_map(this_map, start_px, _out_sum, _sum_observed, _max_observed):
+    def _add_map(this_map, start_px, mask, _out_sum, _sum_observed, _max_observed):
         observed = tf.reduce_sum(tf.gather(this_map, indices=(0, 1), axis=-1), axis=-1)  # (H,W) x 0..1 prob
         out_indices, map_indices = slam_data.get_intersect_ranges_tf(out_shape, tf.shape(this_map), start_px)
+        #print(f"this_map: {this_map.shape} = {tf.reduce_min(this_map, axis=(0,1))} - {tf.reduce_max(this_map, axis=(0,1))}")
+        #print(f"observed: {observed.shape} = {tf.reduce_min(observed)} - {tf.reduce_max(observed)}")
+        #print(f"out_indices: {out_indices.shape} = {tf.reduce_min(out_indices, axis=(0,1))} - {tf.reduce_max(out_indices, axis=(0,1))}")
+        #print(f"map_indices: {map_indices.shape} = {tf.reduce_min(map_indices, axis=(0,1))} - {tf.reduce_max(map_indices, axis=(0,1))}")
 
-        # Accumulate values
-        # sum{i} p(floor|Si)
-        # sum{i} p(wall|Si)
-        # out_sum[out_slices] = np.add(out_sum[out_slices], this_map[map_slices])
-        _out_sum = tf.tensor_scatter_nd_add(_out_sum, out_indices, tf.gather_nd(this_map, map_indices))
+        #selected = tf.gather_nd(observed, map_indices)
+        #print(f"selected: {selected.shape}, {tf.reduce_min(selected)} - {tf.reduce_max(selected)}")
 
-        # sum p(observed|Sj) = normalizer
-        # sum_observed[out_slices] = np.add(sum_observed[out_slices], observed[map_slices])
-        _sum_observed = tf.tensor_scatter_nd_add(_sum_observed, out_indices, tf.gather_nd(observed, map_indices))
+        if mask is None:
+            # Accumulate values
+            # sum{i} p(floor|Si)
+            # sum{i} p(wall|Si)
+            # out_sum[out_slices] = np.add(out_sum[out_slices], this_map[map_slices])
+            _out_sum = tf.tensor_scatter_nd_add(_out_sum, out_indices, tf.gather_nd(this_map, map_indices))
 
-        # max p(observed|Sk) = p(observable)
-        # max_observed[out_slices] = np.maximum(max_observed[out_slices], observed[map_slices])
-        _max_observed = tf.tensor_scatter_nd_max(_max_observed, out_indices, tf.gather_nd(observed, map_indices))
+            # sum p(observed|Sj) = normalizer
+            # sum_observed[out_slices] = np.add(sum_observed[out_slices], observed[map_slices])
+            _sum_observed = tf.tensor_scatter_nd_add(_sum_observed, out_indices, tf.gather_nd(observed, map_indices))
+
+            # max p(observed|Sk) = p(observable)
+            # max_observed[out_slices] = np.maximum(max_observed[out_slices], observed[map_slices])
+            _max_observed = tf.tensor_scatter_nd_max(_max_observed, out_indices, tf.gather_nd(observed, map_indices))
+        else:
+            # Same as above but with the equivalent of the following being performed BEFORE the above
+            # - for the update_map, the mask makes the outer edges all 'unknown' and graduates towards the inner
+            #   disk being as certain as it originally was.
+            # - for the semantic_map, the opposite is true, with its inner disk becoming fully 'unknown'
+            # - the latter causes the existing _max_observed to be scaled down, and then we just do a normal
+            #   max on the result, solving how to do a "weighted max".
+
+            masked_this_map = this_map * mask + slam_data.unknown_map(window_size_px) * (1-mask)  # (H,W,3)
+            masked_observed = observed * mask  # (H,W)
+
+            masked_out_sum = tf.gather_nd(_out_sum, out_indices) * (1-mask) +\
+                                          slam_data.unknown_map(window_size_px) * mask
+            tf.tensor_scatter_nd_update(_out_sum, out_indices, masked_out_sum + masked_this_map)
+
+            masked_sum_observed = tf.gather_nd(_sum_observed, out_indices) * (1-mask)
+            _sum_observed = tf.tensor_scatter_nd_add(_sum_observed, out_indices,
+                                                     tf.gather_nd(masked_sum_observed, map_indices))
+
+            masked_max_observed = tf.gather_nd(_max_observed, out_indices) * (1-mask)
+            tf.tensor_scatter_nd_update(_max_observed, out_indices,
+                                        tf.maximum(masked_max_observed, masked_observed))
+
+        #print(f"out_sum:      {_out_sum.shape}, {tf.reduce_min(_out_sum)} - {tf.reduce_max(_out_sum)}")
+        #print(f"sum_observed: {_sum_observed.shape}, {tf.reduce_min(_sum_observed)} - {tf.reduce_max(_sum_observed)}")
+        #print(f"max_oberved:  {_max_observed.shape}, {tf.reduce_min(_max_observed)} - {tf.reduce_max(_max_observed)}")
 
         return _out_sum, _sum_observed, _max_observed
 
     # Add source and updated map onto output
     out_sum, sum_observed, max_observed = _add_map(
-        semantic_map, -out_min_extent, out_sum, sum_observed, max_observed)
+        semantic_map, -out_min_extent, None, out_sum, sum_observed, max_observed)
     out_sum, sum_observed, max_observed = _add_map(
-        semantic_map, -out_min_extent, out_sum, sum_observed, max_observed)
+        update_map, update_map_offset_px, mask, out_sum, sum_observed, max_observed)
 
     # Compute the final output map
-    # - p(floor|observable) = sum{i} p(floor|Si) / sum p(observed|Sj) * max p(observed|Sk)
-    # - p(wall |observable) = sum{i} p(wall |Si) / sum p(observed|Sj) * max p(observed|Sk)
+    # - p(floor|observable) = sum{i} p(floor|Si) / sum p(observed) * max p(observed)
+    # - p(wall |observable) = sum{i} p(wall |Si) / sum p(observed) * max p(observed)
     sum_observed = tf.where(sum_observed == 0, tf.constant(1e-8, dtype=tf.float32), sum_observed)  # avoid div-by-zero
     out = out_sum / sum_observed[..., tf.newaxis] * max_observed[..., tf.newaxis]
 
@@ -199,6 +253,49 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
     out = tf.cast(tf.concat([out[..., 0:2], out_unknown], axis=-1), tf.float32)
 
     return out, location_start
+
+
+def create_map_update_weight_mask(window_size_px):
+    """
+    Computes a weight mask for a given window size for controlling how new map information
+    is merged into an existing map. The central part of the new map is assumed to replace
+    the existing map, while the outer edges should have no changes applied.
+
+    The mask is generated such that the outer edges are all zero, and the circular disc
+    inner part is divided into three bands as follows:
+    - inner 2 bands: 100%
+    - outer 1 band: linear gradient with 100% at inner edge, and 0% ot outer edge
+    Args:
+        window_size_px: (x,y), int
+    Returns:
+        weight tensor (H,W) x float in range 0.0 to 1.0
+    """
+
+    # Create a grid of (x, y) coordinates
+    x = tf.range(window_size_px[0], dtype=tf.float32)
+    y = tf.range(window_size_px[1], dtype=tf.float32)
+    x_grid, y_grid = tf.meshgrid(x, y)
+
+    # Calculate distances from the center of the mask
+    max_dist_px = (tf.reduce_min(window_size_px)-1) / 2
+    centre_px = (window_size_px-1) / 2
+    distances = tf.sqrt((x_grid - centre_px[0])**2 + (y_grid - centre_px[1])**2)
+
+    # Normalize distances by max_distance to get values in the range [0, 1]
+    normalized_distances = tf.cast(distances, tf.float32) / tf.cast(max_dist_px, tf.float32)
+
+    # Create the mask
+    inner_band = tf.where(normalized_distances <= 2/3, 1.0, 0.0)
+    outer_band = tf.where(
+        (normalized_distances > 2/3) & (normalized_distances <= 1),
+        1.0 - (normalized_distances - 2/3) * 3,
+        0.0
+    )
+
+    # Combine the bands into a final mask
+    mask = tf.maximum(inner_band, outer_band)
+    return tf.cast(mask, tf.float32)
+
 
 
 def get_contour_pxcoords(file, **kwargs):
