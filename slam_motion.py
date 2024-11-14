@@ -128,7 +128,6 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
         (semantic_map, location_start) with semantic map containing the combined results,
         and the physical location of centre of top-left pixel of the newly updated map.
     """
-    # TODO apply a centre-surround mask
 
     # note: internally this functions uses pixel coordinates throughout,
     # unless otherwise stated
@@ -139,17 +138,13 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
     window_size_px = tf.gather(tf.shape(update_map), (0, 1))  # (H,W,3) -> [w,h]
     window_radius_px = window_size_px // 2
 
-    #print(f"semantic_map: {semantic_map.shape} @ {semantic_map_start}")
-    #print(f"update_map: {update_map.shape} @ {update_map_centre} = {update_map_centre - tf.cast(window_radius_px, tf.float32) * pixel_size}")
-
     # convert coordinates to pixels relative to input semantic map
     # - in physical units: update_map_offset
     #    = (update_centre - window_radius) - semantic_map_start
     #    = (update_centre - window_radius_px * PIXEL_SIZE) - semantic_map_start
     # - then divide everything by PIXEL_SIZE and re-arrange
     update_map_offset_px = np.round((update_map_centre - semantic_map_start) / pixel_size).astype(np.int32)\
-       - window_radius_px
-    #print(f"update_map_offset_px: {update_map_offset_px}")
+                           - window_radius_px
 
     # calculate dimensions of new output map
     current_size_px = tf.gather(tf.shape(semantic_map), (1, 0))  # (2,) x int32 = (w,h)
@@ -157,13 +152,9 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
     out_max_extent = tf.maximum(current_size_px, update_map_offset_px + window_size_px)
     out_shape = tf.gather(out_max_extent - out_min_extent, (1, 0))  # (h,w)
     location_start = semantic_map_start + tf.cast(out_min_extent, tf.float32) * pixel_size  # (2,) x float32
-    #print(f"current_size_px: {current_size_px}")
-    #print(f"out extent: {out_min_extent} - {out_max_extent} -> out_shape: {out_shape}")
-    #print(f"location_start: {location_start}")
 
     # Revise update_map location relative to output map
     update_map_offset_px -= out_min_extent
-    #print(f"update_map_offset_px: {update_map_offset_px} (after revision)")
 
     # Initialize tensors for accumulation
     max_observed = tf.zeros(out_shape, dtype=tf.float32)
@@ -183,10 +174,6 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
     def _add_map(this_map, start_px, mask, _out_sum, _sum_observed, _max_observed):
         observed = tf.reduce_sum(tf.gather(this_map, indices=(0, 1), axis=-1), axis=-1)  # (H,W) x 0..1 prob
         out_indices, map_indices = slam_data.get_intersect_ranges_tf(out_shape, tf.shape(this_map), start_px)
-        #print(f"this_map: {this_map.shape} = {tf.reduce_min(this_map, axis=(0,1))} - {tf.reduce_max(this_map, axis=(0,1))}")
-        #print(f"observed: {observed.shape} = {tf.reduce_min(observed)} - {tf.reduce_max(observed)}")
-        #print(f"out_indices: {out_indices.shape} = {tf.reduce_min(out_indices, axis=(0,1))} - {tf.reduce_max(out_indices, axis=(0,1))}")
-        #print(f"map_indices: {map_indices.shape} = {tf.reduce_min(map_indices, axis=(0,1))} - {tf.reduce_max(map_indices, axis=(0,1))}")
 
         if mask is None:
             # Accumulate values
@@ -209,13 +196,9 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
             # - for the semantic_map, the opposite is true, with its inner disk becoming fully 'unknown'
             # - the latter causes the existing _max_observed to be scaled down, and then we just do a normal
             #   max on the result, solving how to do a "weighted max".
-
             mask_3d = tf.expand_dims(mask, axis=-1)
             masked_this_map = this_map * mask_3d + slam_data.unknown_map(window_size_px) * (1-mask_3d)  # (H,W,3)
             masked_observed = observed * mask  # (H,W)
-
-            #print(f"masked_this_map: {tf.reduce_min(masked_this_map, axis=(0,1))} - {tf.reduce_max(masked_this_map, axis=(0,1))}")
-            #print(f"masked_observed: {tf.reduce_min(masked_observed)} - {tf.reduce_max(masked_observed)}")
 
             masked_out_sum = tf.gather_nd(_out_sum, out_indices) * (1-mask_3d) +\
                                           slam_data.unknown_map(window_size_px) * mask_3d
@@ -236,14 +219,6 @@ def update_map(semantic_map, semantic_map_start, update_map, update_map_centre, 
             _max_observed = tf.tensor_scatter_nd_update(
                   _max_observed, out_indices,
                   tf.maximum(masked_max_observed, masked_observed) / rescale)
-
-            #plt.imshow(_max_observed)
-            #plt.colorbar()
-
-        #print(f"out_sum:      {_out_sum.shape}, {tf.reduce_min(_out_sum, axis=(0,1))} - {tf.reduce_max(_out_sum, axis=(0,1))}")
-        #print(f"sum_observed: {_sum_observed.shape}, {tf.reduce_min(_sum_observed)} - {tf.reduce_max(_sum_observed)}")
-        #print(f"max_oberved:  {_max_observed.shape}, {tf.reduce_min(_max_observed)} - {tf.reduce_max(_max_observed)}")
-
         return _out_sum, _sum_observed, _max_observed
 
     # Add source and updated map onto output
