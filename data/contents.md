@@ -42,6 +42,8 @@ experimental-slam-training-data3.npz
 
 - -DLO outputs accurately blanked out when they should be ignored from loss calculations.
 
+- BUG: was generated with pixel_size=44.71 instead of 47.41.
+
 experimental-slam-training-data4.npz
 
 - size: 1000
@@ -57,3 +59,5 @@ experimental-slam-training-data4.npz
 - Blanks out ground-truth output maps for sample type 2 only.
 
 - -DLO outputs accurately blanked out when they should be ignored from loss calculations.
+
+- BUG: was generated with pixel_size=44.71 instead of 47.41.
