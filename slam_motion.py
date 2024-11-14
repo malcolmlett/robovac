@@ -50,14 +50,12 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
 
     # Extract input map from known map
     # - align to known_map pixels, and fill the rest with 'unknown'
-    unknown_value = np.zeros(slam_data.__CLASSES__, dtype=np.float32)
-    unknown_value[slam_data.__UNKNOWN_IDX__] = 1
-    map_window = tf.tile(unknown_value, multiples=(window_size_px, window_size_px, 1))
-
     centre_fpx = (location - known_map_start) / pixel_size
     start_fpx = centre_fpx - window_radius_px
     start_px = np.round(start_fpx).astype(int)
     loc_alignment_offset_fpx = start_fpx - start_px
+
+    map_window = slam_data.unknown_map(window_size_px)
     known_map_indices, map_window_indices = slam_data.get_intersect_ranges_tf(
         tf.shape(known_map), tf.shape(map_window), start_px)
     tf.tensor_scatter_nd_update(map_window, map_window_indices, tf.gather_nd(known_map, known_map_indices))
