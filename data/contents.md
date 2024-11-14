@@ -60,4 +60,8 @@ experimental-slam-training-data4.npz
 
 - -DLO outputs accurately blanked out when they should be ignored from loss calculations.
 
-- BUG: was generated with pixel_size=44.71 instead of 47.41.
+- BUG: was generated with pixel_size=44.71, resulting in incorrect window sizes of 159x159x3. Should have been pixel_size 47.41 and window size 149x149x3.
+
+experimental-slam-training-data5.npz
+
+* Same as v4 but pixel_size fixed (now 47.41), so that window sizes are 149x149x3.
