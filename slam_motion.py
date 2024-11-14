@@ -31,7 +31,7 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
         max_distance: the usual
 
     Return:
-        (map_prediction, accept, delta (x,y), delta orientation)
+        (map_prediction, accept, delta (x,y), delta orientation), (input_map, lds_input)
         - map_prediction: tensor (H,W,3)
         - accept: bool
         - delta (x,y): (2,) float numpy array, units: physical
@@ -79,7 +79,7 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
     delta_location = (adlo_output[0][1:3] * window_size_px * pixel_size).astype(np.float32)
     delta_orientation = (adlo_output[0][3] * np.pi).astype(np.float32)
 
-    return map_pred, accept, delta_location, delta_orientation
+    return (map_pred, accept, delta_location, delta_orientation), (map_window, lds_map)
 
 
 # The logic in here is very similar to that of slam_data.combine_semantic_maps(), particularly the maths,
