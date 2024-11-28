@@ -152,7 +152,7 @@ def predict_at_location(full_map, known_map, known_map_start, model, location, o
     # - turn into TF batch
     map_input = tf.expand_dims(map_window, axis=0)
     lds_input = tf.expand_dims(lds_map, axis=0)
-    (map_output, adlo_output) = model.predict((map_input, lds_input))
+    (map_output, adlo_output) = model.predict((map_input, lds_input), verbose=0)
 
     # Convert to result
     map_pred = tf.math.softmax(map_output[0], axis=-1)
@@ -497,12 +497,18 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
             If false, the generated global map will be larger than the ground-truth map,
             and the full trajectories are always shown. The map images may have to "zoom out" in order to
             compensate.
+            Forced true when saving to file.
     """
 
     # config
     state_follows = kwargs.get('state_follows', 'true')
     map_update_mode = kwargs.get('map_update_mode', 'mask-merge')
     fps = kwargs.get('fps', 2.0)
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    do_clip = kwargs.get('clip', True)
+    if filename is not None:
+        # force to use clipping because otherwise the frame size changes over time and can't save into a gif
+        do_clip = True
 
     # init animation
     os.makedirs("data", exist_ok=True)
@@ -560,12 +566,12 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
         plt.figure(figsize=(15, 4))
         plt.subplot(1, 5, (1, 2))
         _show_state_against_true_map(floorplan, true_location, true_angle, true_trajectory,
-                                     accept, pred_location, pred_angle, pred_trajectory)
+                                     accept, pred_location, pred_angle, pred_trajectory, pixel_size, do_clip)
         plt.subplot(1, 5, 3)
         plt.imshow(input_lds, cmap='gray')
         plt.axis('off')
         plt.subplot(1, 5, (4, 5))
-        _show_state_against_predicted_map(global_map, global_map_start, floorplan.shape)
+        _show_state_against_predicted_map(global_map, global_map_start, floorplan.shape, pixel_size, do_clip)
 
         if filename is None:
             plt.show()
@@ -576,8 +582,12 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
             plt.close()
             frames.append(iio.imread(frame_filename))
 
+            # in case user stops generation early, save gif every 50 frames
+            if i % 50 == 0:
+                iio.imwrite(filename, frames, fps=fps)
+
     if filename is not None:
-        iio.iwwrite(filename, frames, fps=fps)
+        iio.imwrite(filename, frames, fps=fps)
         print()
         print(f"Animation saved to: {filename}")
 
@@ -586,10 +596,8 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
 
 
 def _show_state_against_true_map(floorplan, true_location, true_angle, true_trajectory,
-                                 pred_accept, pred_location, pred_orientation, pred_trajectory, **kwargs):
-    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
-    do_clip = kwargs.get('clip', True)
-
+                                 pred_accept, pred_location, pred_orientation, pred_trajectory,
+                                 pixel_size, do_clip):
     true_loc = true_location / pixel_size
     true_angle_loc = true_loc + np.array([np.cos(true_angle), np.sin(true_angle)]) * 10
 
@@ -616,10 +624,7 @@ def _show_state_against_true_map(floorplan, true_location, true_angle, true_traj
     plt.plot([pred_loc[0], pred_angle_loc[0]], [pred_loc[1], pred_angle_loc[1]], c='m')
 
 
-def _show_state_against_predicted_map(global_map, global_map_start, clip_shape, **kwargs):
-    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
-    do_clip = kwargs.get('clip', True)
-
+def _show_state_against_predicted_map(global_map, global_map_start, clip_shape, pixel_size, do_clip):
     if do_clip:
         # clip map to same size and shape as floorplan
         start = tf.cast(tf.maximum(tf.round(-global_map_start / pixel_size), [0, 0]), tf.int32)
