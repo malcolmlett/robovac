@@ -407,6 +407,7 @@ def animate_trajectory(floorplan, coords, angles, filename=None, **kwargs):
             orientation of agent at each step along trajectory
         filename: string, optional
             File to save animation to. gif format only.
+            Otherwise attempts to animate directly on-screen.
     Keyword args:
         pixel_size: usual meaning and default.
         fps: default 2
@@ -458,3 +459,173 @@ def animate_trajectory(floorplan, coords, angles, filename=None, **kwargs):
 
         # show animation
         idisplay.display(idisplay.Image(filename))
+
+
+def animate_slam(floorplan, locations, orientations, model, filename=None, **kwargs):
+    """
+    Visualise the SLAM agent in action as it navigates around a floorplan and
+    builds up a global map.
+
+    The generated animation includes two versions of the map.
+    The first is based on the ground-truth floorplan.
+    The second is based on the constructed global map.
+    The ground-truth trajectory and estimated trajectory are projected onto both.
+
+    Args:
+        floorplan: ground-truth semantic map
+        locations: list or array, (N,2), units: physical
+            x,y coordinates of agent at each step along trajectory
+        orientations: list or array, (N,), units: radians
+            orientation of agent at each step along trajectory
+        model: the trained SLAM model to use
+        filename: string, optional
+            File to save animation to. gif format only.
+            Otherwise attempts to animate directly on-screen.
+
+    Keyword args:
+        pixel_size: usual meaning and default.
+        state_follows: one of 'true', 'pred', default: 'pred'
+            When updating map, use the ground-truth ('true') location and orientation tracking,
+            or the model-adjusted ('pred') location and orientation tracking.
+        map_update_mode: 'update_mode' passed to update_map()
+        fps: default 2
+            Frames per second.
+        clip: boolean, default: true
+            If true, clips generated maps and images to the bounds of the ground-truth map,
+            providing for a cleaner display and less movement of the maps. Any agent trajectories
+            that extend beyond the bounds of the maps will be omitted from display.
+            If false, the generated global map will be larger than the ground-truth map,
+            and the full trajectories are always shown. The map images may have to "zoom out" in order to
+            compensate.
+    """
+
+    # config
+    state_follows = kwargs.get('state_follows', 'true')
+    map_update_mode = kwargs.get('map_update_mode', 'mask-merge')
+    fps = kwargs.get('fps', 2.0)
+
+    # init animation
+    os.makedirs("data", exist_ok=True)
+    frames = []
+    if filename is not None:
+        print(f"Generating animation and saving to: {filename}")
+
+    # initial map is unknown but for the sake of the animation we'll use the same shape as floorplan
+    # TODO look at whether it's possible to start with a small one
+    global_map_shape = tf.gather(floorplan.shape, (1, 0))
+    global_map = slam_data.unknown_map(global_map_shape)
+    global_map_start = np.array([0, 0])
+
+    # move through trajectory
+    true_trajectory = []
+    pred_trajectory = []
+    prev_true_location = locations[0]
+    prev_true_angle = orientations[0]
+    pred_location = prev_true_location.copy()
+    pred_angle = prev_true_angle.copy()
+    for i in tqdm.tqdm(range(locations.shape[0])):
+        # move agent
+        true_location = locations[i]
+        true_angle = orientations[i]
+        true_location_movement = true_location - prev_true_location
+        true_angle_movement = true_angle - prev_true_angle
+        prev_true_location = true_location
+        prev_true_angle = true_angle
+
+        # update estimated state from movement
+        pred_location += true_location_movement  # (note: does in-place update)
+        pred_angle += true_angle_movement        # (note: does in-place update)
+
+        # do prediction and map update
+        est_location = pred_location if state_follows == "pred" else true_location
+        est_angle = pred_angle if state_follows == "pred" else true_angle
+        (map_pred, accept, delta_location, delta_orientation), (input_map, input_lds) = predict_at_location(
+            floorplan, global_map, global_map_start, model, est_location, est_angle)
+
+        # do map update
+        global_map, global_map_start = update_map(
+            global_map, global_map_start, map_pred, true_location, update_mode=map_update_mode)
+
+        # revise estimated state from prediction
+        pred_location += delta_location  # (note: does in-place update)
+        pred_angle += delta_orientation  # (note: does in-place update)
+
+        # track trajectories
+        true_trajectory.append(true_location)
+        pred_trajectory.append(pred_location.copy())  # clone needed due to in-place updates
+
+        # add to animation
+        if filename is None:
+            idisplay.clear_output(wait=True)
+        plt.figure(figsize=(15, 4))
+        plt.subplot(1, 5, (1, 2))
+        _show_state_against_true_map(floorplan, true_location, true_angle, true_trajectory,
+                                     accept, pred_location, pred_angle, pred_trajectory)
+        plt.subplot(1, 5, 3)
+        plt.imshow(input_lds, cmap='gray')
+        plt.axis('off')
+        plt.subplot(1, 5, (4, 5))
+        _show_state_against_predicted_map(global_map, global_map_start, floorplan.shape)
+
+        if filename is None:
+            plt.show()
+            # don't bother to sleep, as the model execution introduces enough delay
+        else:
+            frame_filename = "data/frame.png"
+            plt.savefig(frame_filename, bbox_inches='tight', pad_inches=0)
+            plt.close()
+            frames.append(iio.imread(frame_filename))
+
+    if filename is not None:
+        iio.iwwrite(filename, frames, fps=fps)
+        print()
+        print(f"Animation saved to: {filename}")
+
+        # show animation
+        idisplay.display(idisplay.Image(filename))
+
+
+def _show_state_against_true_map(floorplan, true_location, true_angle, true_trajectory,
+                                 pred_accept, pred_location, pred_orientation, pred_trajectory, **kwargs):
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    do_clip = kwargs.get('clip', True)
+
+    true_loc = true_location / pixel_size
+    true_angle_loc = true_loc + np.array([np.cos(true_angle), np.sin(true_angle)]) * 10
+
+    pred_loc = pred_location / pixel_size
+    pred_angle_loc = pred_loc + np.array([np.cos(pred_orientation), np.sin(pred_orientation)]) * 10
+
+    plt.imshow(floorplan)
+    plt.axis('off')
+    if do_clip:
+        plt.xlim(0, floorplan.shape[1])
+        plt.ylim(floorplan.shape[0], 0)  # Reverse y-axis for correct orientation when plotting onto an image
+
+    def plot_trajectory(trajectory, c):
+        trajectory = np.array(trajectory) / pixel_size
+        for i in range(trajectory.shape[0] - 1):
+            plt.plot(trajectory[i:i + 2, 0], trajectory[i:i + 2, 1], c=c, linewidth=1, clip_on=do_clip)
+
+    plot_trajectory(true_trajectory, 'k')
+    plot_trajectory(pred_trajectory, 'm')
+
+    plt.scatter(true_loc[0], true_loc[1], c='k', s=50)
+    plt.plot([true_loc[0], true_angle_loc[0]], [true_loc[1], true_angle_loc[1]], c='k')
+    plt.scatter(pred_loc[0], pred_loc[1], c='m', s=50)
+    plt.plot([pred_loc[0], pred_angle_loc[0]], [pred_loc[1], pred_angle_loc[1]], c='m')
+
+
+def _show_state_against_predicted_map(global_map, global_map_start, clip_shape, **kwargs):
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    do_clip = kwargs.get('clip', True)
+
+    if do_clip:
+        # clip map to same size and shape as floorplan
+        start = tf.cast(tf.maximum(tf.round(-global_map_start / pixel_size), [0, 0]), tf.int32)
+        size = tf.gather(clip_shape, (1, 0))
+        end = start + size
+        global_map = global_map[start[1]:end[1], start[0]:end[0]]
+
+    plt.imshow(global_map)
+    plt.axis('off')
