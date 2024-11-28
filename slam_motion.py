@@ -6,9 +6,91 @@ import lds
 import slam_data
 
 import numpy as np
+import tensorflow as tf
 import cv2
 import math
-import tensorflow as tf
+import os
+import IPython.display as idisplay
+import matplotlib.pyplot as plt
+import imageio.v3 as iio
+import tqdm
+import time
+
+
+def load_trajectory_pxcoords(path, **kwargs):
+    """
+    Loads the full resolution trajectory contour from the provided image file (usually a floorplan).
+    For semantic map extraction, see the `slam_data` module.
+
+    Args:
+        path: image file path
+    Keyword args:
+        colour = 3-list, tuple, or array, int in range 0..255
+            default: [127, 127, 127]
+    Returns:
+        (N,2) x int - contour coordinates in pixels relative to the image
+    """
+    colour = np.array(kwargs.get('colour', [128, 128, 128]))
+
+    # Load the image
+    image = cv2.imread(path)
+
+    # Define the color range for the path (replace with actual BGR values)
+    lower_bound = colour-1  # lower BGR bound of the path color
+    upper_bound = colour+1  # upper BGR bound of the path color
+
+    # Create a mask to isolate the path based on the color range
+    mask = cv2.inRange(image, lower_bound, upper_bound)
+
+    # Find contours of the path
+    # - use CHAIN_APPROX_NONE in order to get coords for every pixel
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+    # Returns a list of contours (usually just 1), and then for each contour we have: (n, 1, 2).
+    # This seems to represent: (contour_len, ?=1, [x,y])
+
+    # return as just an array of (x, y) coordinates along the path
+    return contours[0][:, 0, :]
+
+
+def sample_trajectory(px_coords, **kwargs):
+    """
+    Generates a pseudo-realistic path of motion around the contour drawn on the floorplan.
+    At each point of the trajectory, the agent is assumed to be at a particular physical (x,y) coordinate and facing
+    in the direction of next motion.
+
+    Args:
+        px_coords: (N,2) x int - contour coordinates in pixels relative to the image
+    Keyword args:
+        step_size: float, units: physical, default: equivalent of 10 pixels
+            How far to move in each step.
+    Returns:
+        (coords, orientations) - trajectory coordinates in physical units, and orientations in radians.
+    """
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    step_size = kwargs.get('step_size', pixel_size * 10)
+
+    # for convenience, we'll work in px units for most of this
+
+    # sample index pairs: start + target target
+    step_size_fpx = step_size / pixel_size  # floating-point accuracy
+    indices1 = np.round(np.arange(0, len(px_coords), step_size_fpx)).astype(np.int32)
+    indices2 = indices1 + math.floor(step_size_fpx)
+    if indices2[-1] >= len(px_coords):
+        indices2[-1] = len(px_coords) - 1
+
+    # get px coords
+    trajectory_px_coords = px_coords[indices1]
+    target_px_coords = px_coords[indices2]
+
+    # compute angles
+    dy = target_px_coords[:, 1] - trajectory_px_coords[:, 1]
+    dx = target_px_coords[:, 0] - trajectory_px_coords[:, 0]
+    orientations = np.arctan2(dy, dx)
+
+    # return in physical units
+    trajectory_coords = trajectory_px_coords * pixel_size
+    return trajectory_coords, orientations
 
 
 def predict_at_location(full_map, known_map, known_map_start, model, location, orientation, **kwargs):
@@ -290,72 +372,90 @@ def create_map_update_weight_mask(window_size_px):
     return tf.cast(mask, tf.float32)
 
 
-
-def get_contour_pxcoords(file, **kwargs):
+def show_trajectory(floorplan, coords, **kwargs):
     """
-    Extracts the raw trajectory contour from the image file.
+    Visualise a trajectory as a static plot overlaid onto the floorplan.
+
     Args:
-        file: filename
+        floorplan: semantic map to overlay trajectory
+        coords: list or array, (N,2), units: physical
+            x,y coordinates of agent at each step along trajectory
     Keyword args:
-        colour = 3-list, tuple, or array, int in range 0..255
-            default: [127, 127, 127]
-    Returns:
-        (N,2) x int - contour coordinates in pixels relative to the image
+        pixel_size: usual meaning and default.
     """
-    colour = np.array(kwargs.get('colour', [127, 127, 127]))
 
-    # Load the image
-    image = cv2.imread(file)
-
-    # Define the color range for the path (replace with actual BGR values)
-    lower_bound = colour-1  # lower BGR bound of the path color
-    upper_bound = colour+1  # upper BGR bound of the path color
-
-    # Create a mask to isolate the path based on the color range
-    mask = cv2.inRange(image, lower_bound, upper_bound)
-
-    # Find contours of the path
-    # - use CHAIN_APPROX_NONE in order to get coords for every pixel
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-    # I think it's a tuple containing one entry for each counter
-    # Then for each counter we have: (max_len, ?=1, (x,y))
-
-    # return as just an array of (x, y) coordinates along the path
-    return contours[0][:, 0, :]
-
-
-def sample_trajectory(px_coords, **kwargs):
-    """
-    Generates a pseudo-realistic path of motion around the contour drawn on the floorplan.
-    At each point of the trajectory, the agent is assumed to be at a particular physical (x,y) coordinate and facing
-    in the direction of next motion.
-    Args:
-      px_coords: (N,2) x int - contour coordinates in pixels relative to the image
-    Returns:
-      (coords, orientations) - trajectory coordinates in physical units, and orientations in radians.
-    """
+    # config
     pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
-    step_size = kwargs.get('step_size', pixel_size * 10)
 
-    # for convenience, we'll work in px units for most of this
+    # convert to px units
+    coords = coords / pixel_size
 
-    # sample index pairs: start + target target
-    step_size_fpx = step_size / pixel_size  # floating-point accuracy
-    indices1 = np.round(np.arange(0, len(px_coords), step_size_fpx)).astype(np.int32)
-    indices2 = indices1 + math.floor(step_size_fpx)
-    if indices2[-1] >= len(px_coords):
-        indices2[-1] = len(px_coords) - 1
+    plt.imshow(floorplan)
+    plt.axis('off')
+    plt.plot(coords[:, 0], coords[:, 1], c='k', linewidth=1)
+    plt.show()
 
-    # get px coords
-    trajectory_px_coords = px_coords[indices1]
-    target_px_coords = px_coords[indices2]
 
-    # compute angles
-    dy = target_px_coords[:, 1] - trajectory_px_coords[:, 1]
-    dx = target_px_coords[:, 0] - trajectory_px_coords[:, 0]
-    orientations = np.arctan2(dy, dx)
+def animate_trajectory(floorplan, coords, angles, filename=None, **kwargs):
+    """
+    Visualise a trajectory as an animation of the agent moving around the floorplan.
 
-    # return in physical units
-    trajectory_coords = trajectory_px_coords * pixel_size
-    return trajectory_coords, orientations
+    Args:
+        floorplan: semantic map to overlay trajectory
+        coords: list or array, (N,2), units: physical
+            x,y coordinates of agent at each step along trajectory
+        angles: list or array, (N,), units: radians
+            orientation of agent at each step along trajectory
+        filename: string, optional
+            File to save animation to. gif format only.
+    Keyword args:
+        pixel_size: usual meaning and default.
+        fps: default 2
+            Frames per second.
+    """
+
+    # config
+    pixel_size = kwargs.get('pixel_size', lds.__PIXEL_SIZE__)
+    fps = kwargs.get('fps', 2.0)
+    os.makedirs("data", exist_ok=True)
+
+    # convert to px units
+    coords = coords / pixel_size
+
+    if filename is not None:
+        print(f"Generating animation and saving to: {filename}")
+
+    frames = []
+    for i in tqdm.tqdm(range(coords.shape[0])):
+        angle = angles[i]
+        loc1 = coords[i, :]
+        loc2 = loc1 + np.array([np.cos(angle), np.sin(angle)]) * 5
+
+        if filename is None:
+            idisplay.clear_output(wait=True)
+        plt.imshow(floorplan)
+        plt.axis('off')
+
+        # plot trajectory taken
+        plt.plot(coords[0:(i + 1), 0], coords[0:(i + 1), 1], c='k', linewidth=1)
+
+        # plot current location
+        plt.scatter(loc1[0], loc1[1], c='m')
+        plt.plot([loc1[0], loc2[0]], [loc1[1], loc2[1]], 'm-')
+
+        if filename is None:
+            plt.show()
+            time.sleep(1/fps)
+        else:
+            frame_filename = "data/frame.png"
+            plt.savefig(frame_filename, bbox_inches='tight', pad_inches=0)
+            plt.close()
+            frames.append(iio.imread(frame_filename))
+
+    if filename is not None:
+        iio.imwrite(filename, frames, fps=fps)
+        print()
+        print(f"Animation saved to: {filename}")
+
+        # show animation
+        idisplay.display(idisplay.Image(filename))
