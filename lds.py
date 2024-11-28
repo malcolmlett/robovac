@@ -125,6 +125,9 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     step_size = kwargs.get('step_size', max_distance/3)
     nothing_value = kwargs.get('nothing_value', 0.0)
 
+    if occupancy_map.ndim != 2:
+        raise ValueError(f"Expected occupancy_map of shape (H, W) but found {occupancy_map.shape}")
+
     # initialise lookup cache
     grid_size_px = math.floor(step_size / pixel_size)  # conservatively prefer regions slightly closer together
     grid_radius_px = math.ceil(step_size / pixel_size)  # conservatively prefer regions slightly larger
