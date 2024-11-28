@@ -1,6 +1,5 @@
-# Animates motion of the SLAM agent.
-
-# TODO rename to "slam_operations" so I can use it for static application of the slam model etc.
+# Operation-time logic for SLAM.
+# Includes functions for animating use of the SLAM agent.
 
 import lds
 import slam_data
