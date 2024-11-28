@@ -48,6 +48,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import math
 import tqdm
+import imageio.v3 as iio
 from typing import Any
 
 
@@ -58,11 +59,31 @@ __OBSTRUCTION_IDX__ = 1
 __UNKNOWN_IDX__ = 2
 
 
-# TODO rename to image_to_semantic_map
+def load_floorplan(path):
+    """
+    Loads a single semantic map from an original RGB image at a given file path.
+
+    The returned semantic map ignores any trajectory embedded within the image file.
+    For trajectory extraction, see the `slam_operations` module.
+
+    Args:
+        path - file path
+    Returns:
+        semantic map (H, W, 3) - one-hot encoded numpy array
+    """
+    # load image as numpy int array (RGB, with levels in range 0..255)
+    image = iio.imread(path)
+
+    # convert to one-hot-encoded form
+    return one_hot_encode_floorplan(image).numpy()
+
+
 def one_hot_encode_floorplan(image):
     """
     Converts an RGB floorplan image into a semantic-map: a one-hot encoded tensor of the same form
     used as input and output maps in the SLAM model.
+
+    Ignores any trajectories embedded in the image.
 
     Ordered channels are:
     - floor (white in the RGB image)
@@ -70,17 +91,19 @@ def one_hot_encode_floorplan(image):
     - unknown (grey in the RGB image)
 
     Args:
-      image: (H,W,3) RGB floorplan image
+      image: (H,W,3) RGB-int floorplan image
 
     Returns:
       (H,W,C) one-hot encoded tensor of the floorplan image
     """
     # sanity check
-    if not np.array_equal(np.unique(image), np.array([0, 192, 255])):
-        raise ValueError(f"Encountered unexpected values in image, expected [0, 192, 255], got: {np.unique(image)}")
+    allowed_values = [0, 128, 192, 255]
+    if not np.array_equal(np.unique(image), np.array(allowed_values)):
+        raise ValueError(f"Encountered unexpected values in image, expected ${allowed_values}, got: {np.unique(image)}")
 
     # get each channel
-    floor_mask = tf.reduce_all(tf.equal(image, [255, 255, 255]), axis=-1)
+    floor_mask = tf.reduce_all(tf.equal(image, [255, 255, 255]), axis=-1) | \
+                 tf.reduce_all(tf.equal(image, [128, 128, 128]), axis=-1)
     obstruction_mask = tf.reduce_all(tf.equal(image, [0, 0, 0]), axis=-1)
     unknown_mask = tf.reduce_all(tf.equal(image, [192, 192, 192]), axis=-1)
 
