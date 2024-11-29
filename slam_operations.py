@@ -516,11 +516,21 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
     if filename is not None:
         print(f"Generating animation and saving to: {filename}")
 
-    # initial map is unknown but for the sake of the animation we'll use the same shape as floorplan
-    # TODO look at whether it's possible to start with a small one
-    global_map_shape = tf.gather(floorplan.shape, (1, 0))
-    global_map = slam_data.unknown_map(global_map_shape)
-    global_map_start = np.array([0, 0])
+    # init global map
+    pad = 0
+    if do_clip:
+      # holding fixed sized output for sake of visuals and for sake of animation frames
+      # needing to be same size so re-calculate global map shape,
+      # -> use floorplan size plus a little extra around the sides
+      pad = 10
+      global_map_shape = tf.gather(floorplan.shape, (1, 0))
+      global_map_shape += pad*2
+      global_map = slam_data.unknown_map(global_map_shape)
+      global_map_start = np.array([-pad, -pad]) * lds.__PIXEL_SIZE__
+    else:
+      # just create a small unknown map centred around agent location
+      global_map = slam_data.unknown_map((10, 10))
+      global_map_start = locations[0] - (np.array([-5, -5]) * lds.__PIXEL_SIZE__)
 
     # move through trajectory
     true_trajectory = []
@@ -566,12 +576,12 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
         plt.figure(figsize=(15, 4))
         plt.subplot(1, 5, (1, 2))
         _show_state_against_true_map(floorplan, true_location, true_angle, true_trajectory,
-                                     accept, pred_location, pred_angle, pred_trajectory, pixel_size, do_clip)
+                                     accept, pred_location, pred_angle, pred_trajectory, pixel_size, do_clip, pad)
         plt.subplot(1, 5, 3)
         plt.imshow(input_lds, cmap='gray')
         plt.axis('off')
         plt.subplot(1, 5, (4, 5))
-        _show_state_against_predicted_map(global_map, global_map_start, floorplan.shape, pixel_size, do_clip)
+        _show_state_against_predicted_map(global_map, global_map_start, floorplan.shape, pixel_size, do_clip, pad)
 
         if filename is None:
             plt.show()
@@ -597,7 +607,7 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
 
 def _show_state_against_true_map(floorplan, true_location, true_angle, true_trajectory,
                                  pred_accept, pred_location, pred_orientation, pred_trajectory,
-                                 pixel_size, do_clip):
+                                 pixel_size, do_clip, pad):
     true_loc = true_location / pixel_size
     true_angle_loc = true_loc + np.array([np.cos(true_angle), np.sin(true_angle)]) * 10
 
@@ -607,8 +617,9 @@ def _show_state_against_true_map(floorplan, true_location, true_angle, true_traj
     plt.imshow(floorplan)
     plt.axis('off')
     if do_clip:
-        plt.xlim(0, floorplan.shape[1])
-        plt.ylim(floorplan.shape[0], 0)  # Reverse y-axis for correct orientation when plotting onto an image
+        # include a little extra buffer around the sides
+        plt.xlim(-pad, floorplan.shape[1]+pad)
+        plt.ylim(floorplan.shape[0]+pad, -pad)  # Reverse y-axis for correct orientation when plotting onto an image
 
     def plot_trajectory(trajectory, c):
         trajectory = np.array(trajectory) / pixel_size
@@ -624,12 +635,15 @@ def _show_state_against_true_map(floorplan, true_location, true_angle, true_traj
     plt.plot([pred_loc[0], pred_angle_loc[0]], [pred_loc[1], pred_angle_loc[1]], c='m')
 
 
-def _show_state_against_predicted_map(global_map, global_map_start, clip_shape, pixel_size, do_clip):
+def _show_state_against_predicted_map(global_map, global_map_start, clip_shape, pixel_size, do_clip, pad):
     if do_clip:
-        # clip map to same size and shape as floorplan
+        # clip map to same size and shape as floorplan,
+        # except leave little extra buffer around the sides
         start = tf.cast(tf.maximum(tf.round(-global_map_start / pixel_size), [0, 0]), tf.int32)
         size = tf.gather(clip_shape, (1, 0))
         end = start + size
+        start -= pad
+        end += pad
         global_map = global_map[start[1]:end[1], start[0]:end[0]]
 
     plt.imshow(global_map)
