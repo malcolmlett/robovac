@@ -1229,6 +1229,40 @@ def validate_dataset(dataset):
     print(f"Dataset tests passed ({count} entries verified)")
 
 
+def filter_dataset(dataset, num, sample_types=None):
+    """
+    Useful when messing around with the dataset for display.
+    Applies a combination of filters against the dataset, returning a new dataset.
+
+    Args:
+         dataset - a dataset returned by generate_training_data().
+    Returns:
+        filtered dataset
+    """
+    input_maps = []
+    lds_maps = []
+    output_maps = []
+    adlos = []
+    metadatas = []
+
+    for (input_map, lds_map), (output_map, adlo), metadata in dataset:
+        sample_type = metadata[1]
+        if sample_types is None or np.isin(sample_type, np.array(sample_types)):
+            input_maps.append(input_map)
+            lds_maps.append(lds_map)
+            output_maps.append(output_map)
+            adlos.append(adlo)
+            metadatas.append(metadata)
+        if len(input_maps) >= num:
+            break
+
+    return tf.data.Dataset.from_tensor_slices((
+        (input_maps, lds_maps),
+        (output_maps, adlos),
+        metadatas
+    ))
+
+
 def show_dataset(dataset, num=5, sample_types=None):
     """
     Lists a few examples from a training dataset.
@@ -1240,13 +1274,9 @@ def show_dataset(dataset, num=5, sample_types=None):
         sample_types - list, tuple, or array. Default: none.
             Set of sample_types to filter on.
     """
-    cnt = 0
-    for (input_map, lds_map), (output_map, adlo), metadata in dataset:
-        if sample_types is None or np.isin(metadata[1], np.array(sample_types)):
-            show_data_sample(input_map, lds_map, output_map, adlo, metadata)
-            cnt += 1
-            if cnt >= num:
-                break
+    filtered = filter_dataset(dataset, num, sample_types)
+    for (input_map, lds_map), (output_map, adlo), metadata in filtered:
+        show_data_sample(input_map, lds_map, output_map, adlo, metadata)
 
 
 def show_data_sample(input_map, lds_map, output_map, adlo, metadata=None):
