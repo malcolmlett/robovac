@@ -519,18 +519,18 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
     # init global map
     pad = 0
     if do_clip:
-      # holding fixed sized output for sake of visuals and for sake of animation frames
-      # needing to be same size so re-calculate global map shape,
-      # -> use floorplan size plus a little extra around the sides
-      pad = 10
-      global_map_shape = tf.gather(floorplan.shape, (1, 0))
-      global_map_shape += pad*2
-      global_map = slam_data.unknown_map(global_map_shape)
-      global_map_start = np.array([-pad, -pad]) * lds.__PIXEL_SIZE__
+        # holding fixed sized output for sake of visuals and for sake of animation frames
+        # needing to be same size so re-calculate global map shape,
+        # -> use floorplan size plus a little extra around the sides
+        pad = 10
+        global_map_shape = tf.gather(floorplan.shape, (1, 0))
+        global_map_shape += pad*2
+        global_map = slam_data.unknown_map(global_map_shape)
+        global_map_start = np.array([-pad, -pad]) * lds.__PIXEL_SIZE__
     else:
-      # just create a small unknown map centred around agent location
-      global_map = slam_data.unknown_map((10, 10))
-      global_map_start = locations[0] - (np.array([-5, -5]) * lds.__PIXEL_SIZE__)
+        # just create a small unknown map centred around agent location
+        global_map = slam_data.unknown_map((10, 10))
+        global_map_start = locations[0] - (np.array([-5, -5]) * lds.__PIXEL_SIZE__)
 
     # move through trajectory
     true_trajectory = []
