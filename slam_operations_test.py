@@ -3,6 +3,7 @@ from slam_operations import *
 
 def run_test_suite():
     get_contour_pxcoords_test()
+    print("All slam_operations tests passed.")
 
 
 def get_contour_pxcoords_test():

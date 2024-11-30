@@ -525,6 +525,10 @@ def rotated_crop(image, centre, angle, size, **kwargs):
     Takes a crop of a particular size and angle from any image-like source.
     Fills in any unknown areas with configurable pad values, and optionally applies a circular mask.
 
+    Produces a numerically stable simple crop if applying no rotation and the centre is pixel-aligned.
+    Otherwise uses OpenCV2 to rotate and/or shift the crop window with sub-pixel resolution.
+    By default uses nearest-neighbour interpolation, but can use others.
+
     Note that this method behaves a little differently to a simple image rotation.
     The result is that the crop-window itself is rotated, counterclockwise. This
     results in the cropped section of the original image being rotated clockwise by the same amount.
@@ -572,48 +576,58 @@ def rotated_crop(image, centre, angle, size, **kwargs):
     #   - crop location and size
     #       - if we're rotating about a point on the edge of the image, then we
     #         want room available in the target location for the crop
-    # Experiments have shown that we only need to cope with the latter.
+    # Experiments have shown that in order to support INTER_NEAREST, I only need to cope with the latter.
+    # To support interpolation, I need to cope with the former, but I haven't added that in yet.
 
     # config
     # (normalise data type)
     centre = np.array(centre).astype(np.float32)
 
-    # eventual crop window without clipping
-    # (using some calculations as below, but note that we'll need to re-calculate after padding
-    #  shifts the coords)
-    x1 = int(centre[0] - (size[0] - 1) / 2)
-    x2 = int(centre[0] - (size[0] - 1) / 2) + size[0]
-    y1 = int(centre[1] - (size[1] - 1) / 2)
-    y2 = int(centre[1] - (size[1] - 1) / 2) + size[1]
+    # compute sub-pixel adjustment
+    # (if centre is not pixel-aligned, then we'll shift the source image by the required amount to pixel-align
+    #  with the final crop)
+    centre_px = np.round(centre)          # aligned to pixels in target clip
+    subpixel_shift = centre_px - centre
 
-    # Apply padding
-    # (note that opencv is designed for images so only takes a scalar for 'value'.
-    #  So we have to convert to the pad_value afterwards)
+    # initial crop window coordinates
+    # (needed in order to calculate padding; similar to calculations below, but biased towards
+    # a larger size in all directions. Note that we'll need to re-calculate after padding shifts the coords)
+    x1 = int(math.floor(centre[0] - (size[0] - 1) / 2))
+    x2 = int(math.ceil(centre[0] - (size[0] - 1) / 2 + size[0]))
+    y1 = int(math.floor(centre[1] - (size[1] - 1) / 2))
+    y2 = int(math.ceil(centre[1] - (size[1] - 1) / 2 + size[1]))
+
+    # apply padding
+    # (makes room for the source image to get rotated _into_ the target clip window)
+    # (note: opencv only seems to take a scalar for the border value, and we convert to pad_value afterwards)
     pad_x1 = max(0, -x1)
     pad_x2 = max(0, x2 - image.shape[1])
     pad_y1 = max(0, -y1)
     pad_y2 = max(0, y2 - image.shape[0])
     if max(pad_x1, pad_x2, pad_y1, pad_y2) > 0:
         image = cv2.copyMakeBorder(image, pad_y1, pad_y2, pad_x1, pad_x2, cv2.BORDER_CONSTANT, value=0)
+        image[np.max(image, axis=-1) == 0, :] = pad_value
 
     # update coords after padding
     h, w = image.shape[0:2]
     centre = (centre[0] + pad_x1, centre[1] + pad_y1)
+    centre_px = (centre_px[0] + pad_x1, centre_px[1] + pad_y1)
 
-    # rotate whole image about the (revised) centre point
-    rotation_matrix = cv2.getRotationMatrix2D(centre, -np.rad2deg(angle), scale=1.0)
-    rotated = cv2.warpAffine(image, rotation_matrix, (w, h), flags=interpolation)
+    # rotate whole image about the (revised) centre point and shift by sub-pixel offset
+    if angle == 0.0 and np.array_equal(subpixel_shift, np.array([0., 0.])):
+        rotated = image
+    else:
+        transformation_matrix = cv2.getRotationMatrix2D(centre, -np.rad2deg(angle), scale=1.0)
+        transformation_matrix[0, 2] += subpixel_shift[0]  # x
+        transformation_matrix[1, 2] += subpixel_shift[1]  # y
+        rotated = cv2.warpAffine(image, transformation_matrix, (w, h), flags=interpolation)
 
     # take crop around the (revised) centre point
-    # (here we have to convert from sub-pixel resolution to pixels,
-    #  we take the mathematical floor on the left/top edge of the crop.
-    #  It's important to note that this places our target centre slightly biased
-    #  towards the bottom/right edge of the crop)
     # (the following has been verified to produce accurate results on small odd and even sizes)
-    x1 = int(centre[0] - (size[0] - 1) / 2)
-    x2 = int(centre[0] - (size[0] - 1) / 2) + size[0]
-    y1 = int(centre[1] - (size[1] - 1) / 2)
-    y2 = int(centre[1] - (size[1] - 1) / 2) + size[1]
+    x1 = int(centre_px[0] - (size[0] - 1) / 2)
+    x2 = int(centre_px[0] - (size[0] - 1) / 2) + size[0]
+    y1 = int(centre_px[1] - (size[1] - 1) / 2)
+    y2 = int(centre_px[1] - (size[1] - 1) / 2) + size[1]
     cropped = rotated[y1:y2, x1:x2, ...]
 
     # apply mask
@@ -632,6 +646,9 @@ def rotated_crop(image, centre, angle, size, **kwargs):
         raise ValueError(f"Unknown mask type: {mask}")
 
     # Apply pad_value for all empty pixels
+    # (the padding isn't yet sufficient to cope with all scenarios, so still need to fill in the gaps sometimes)
+    # (note that this doesn't work well when doing interpolation because you end up with values close to but not
+    #  equal to zero)
     cropped[np.max(cropped, axis=-1) == 0, :] = pad_value
 
     # convert back to target type

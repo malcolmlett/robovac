@@ -10,6 +10,7 @@ def run_test_suite():
     get_intersect_ranges_tf_test()
     compute_model_revisement_weight_test()
     rotated_crop_test()
+    print("All slam_data tests passed.")
 
 
 def get_intersect_ranges_test():
@@ -195,6 +196,29 @@ def rotated_crop_test():
         r = np.ones_like(g) - g - b
         return np.dstack((r, g, b))
 
+    def expected_subpixel_result():
+        # result after rotating by 45degrees about centre (3.4, 3.0)
+        g = np.array([
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 1., 0., 0., 1., 1., 0.],
+            [0., 0., 1., 1., 1., 0., 0.],
+            [0., 0., 1., 1., 0., 0., 0.],
+            [0., 1., 1., 0., 1., 0., 0.],
+            [0., 1., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+        ])
+        b = np.array([
+            [1., 0., 0., 0., 0., 1., 1.],
+            [0., 0., 0., 0., 0., 0., 1.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [1., 0., 0., 0., 0., 0., 1.],
+            [1., 1., 0., 0., 0., 1., 1.],
+        ])
+        r = np.ones_like(g) - g - b
+        return np.dstack((r, g, b))
+
     def inner_circle_mask(inp):
         mask = np.array([
             [1., 1., 1., 0., 1., 1., 1.],
@@ -211,6 +235,24 @@ def rotated_crop_test():
         out[mask == 1.0, 2] = 1.
         return out
 
+    def shift_image(inp, shift):
+        dx, dy = shift
+        start_src_x = max(0, 0 - dx)
+        end_src_x = min(inp.shape[1], -dx + inp.shape[1])
+        start_src_y = max(0, 0 - dy)
+        end_src_y = min(inp.shape[0], -dy + inp.shape[0])
+
+        start_tgt_x = start_src_x + dx
+        end_tgt_x = end_src_x + dx
+        start_tgt_y = start_src_y + dy
+        end_tgt_y = end_src_y + dy
+
+        rg = np.zeros(shape=inp.shape[0:2])
+        b = np.ones(shape=inp.shape[0:2])
+        out = np.dstack((rg, rg, b))
+        out[start_tgt_y:end_tgt_y, start_tgt_x:end_tgt_x] = inp[start_src_y:end_src_y, start_src_x:end_src_x]
+        return out
+
     def extend_image(inp, pad_value):
         """ Inserts a column at the front and a row at the bottom """
         # insert column at front
@@ -219,7 +261,7 @@ def rotated_crop_test():
         inp = np.insert(inp, inp.shape[0], pad_value, axis=0)
         return inp
 
-    # 90-degree rotations without mask
+    # 90-degree rotations without mask, pixel-aligned
     pad_value = np.array([0., 0., 1.])
     img = test_image_at_90(0)
     assert np.array_equal(
@@ -235,7 +277,7 @@ def rotated_crop_test():
         rotated_crop(img, (3, 3), np.deg2rad(-90), size=(7, 7), mask='none', pad_value=pad_value),
         test_image_at_90(90))
 
-    # 45-degree rotations without mask
+    # 45-degree rotations without mask, pixel-aligned
     img = test_image_at_90(0)
     assert np.array_equal(
         rotated_crop(img, (3, 3), np.deg2rad(45), size=(7, 7), mask='none', pad_value=pad_value),
@@ -250,7 +292,7 @@ def rotated_crop_test():
         rotated_crop(img, (3, 3), np.deg2rad(-45), size=(7, 7), mask='none', pad_value=pad_value),
         test_image_at_45(45))
 
-    # 90-degree rotations with mask
+    # 90-degree rotations with mask, pixel-aligned
     img = test_image_at_90(0)
     assert np.array_equal(
         rotated_crop(img, (3, 3), np.deg2rad(0), size=(7, 7), mask='inner-circle',pad_value=pad_value),
@@ -265,7 +307,7 @@ def rotated_crop_test():
         rotated_crop(img, (3, 3), np.deg2rad(-90), size=(7, 7), mask='inner-circle', pad_value=pad_value),
         inner_circle_mask(test_image_at_90(90)))
 
-    # 45-degree rotations with mask
+    # 45-degree rotations with mask, pixel-aligned
     img = test_image_at_90(0)
     assert np.array_equal(
         rotated_crop(img, (3, 3), np.deg2rad(45), size=(7, 7), mask='inner-circle', pad_value=pad_value),
@@ -280,8 +322,11 @@ def rotated_crop_test():
         rotated_crop(img, (3, 3), np.deg2rad(-45), size=(7, 7), mask='inner-circle', pad_value=pad_value),
         inner_circle_mask(test_image_at_45(45)))
 
-    # various crops from a larger image
+    # various crops from a larger image, pixel-aligned
     img = extend_image(test_image_at_90(0), pad_value)
+    assert np.array_equal(
+        rotated_crop(img, (4, 3), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_90(0))
     assert np.array_equal(
         rotated_crop(img, (4, 3), np.deg2rad(90), size=(7, 7), mask='none', pad_value=pad_value),
         test_image_at_90(-90))
@@ -291,5 +336,41 @@ def rotated_crop_test():
     assert np.array_equal(
         rotated_crop(img, (4, 3), np.deg2rad(-45), size=(7, 7), mask='inner-circle', pad_value=pad_value),
         inner_circle_mask(test_image_at_45(45)))
+
+    # subpixel support - simple sub-pixel translations
+    # (note: with interpolation on you get even more interesting results, but it's harder to define the
+    #  expected values so I'm not bothering)
+    img = test_image_at_90(0)
+    assert np.array_equal(
+        rotated_crop(img, (2.4, 3), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (+1, 0)))
+    assert np.array_equal(
+        rotated_crop(img, (2.6, 3), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (0, 0)))
+    assert np.array_equal(
+        rotated_crop(img, (3.4, 3), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (0, 0)))
+    assert np.array_equal(
+        rotated_crop(img, (3.6, 3), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (-1, 0)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 2.4), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (0, +1)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 2.6), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (0, 0)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3.4), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (0, 0)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3.6), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        shift_image(img, (0, -1)))
+
+    # subpixel support - sub-pixel translation with rotation
+    img = test_image_at_90(0)
+    assert np.array_equal(
+        rotated_crop(img, (3.4, 3.0), np.deg2rad(45), size=(7, 7), mask='none', pad_value=pad_value),
+        expected_subpixel_result())
+
 
 
