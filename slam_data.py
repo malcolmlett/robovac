@@ -42,7 +42,6 @@
 #  - [7]: agent orientation, unit: radians
 
 import lds
-import map_from_lds_train_data
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
@@ -396,8 +395,8 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
     location_alignment_offset_fpx = location_fpx - location_px  # true centre relative to window centre
     if map_known:
         # crop from original floorplan
-        input_map = map_from_lds_train_data.rotated_crop(
-            semantic_map, location_px, 0.0, size=window_size_px, mask='none', pad_value=unknown_value)
+        input_map = rotated_crop(semantic_map, location_px, 0.0, size=window_size_px, mask='none',
+                                 pad_value=unknown_value)
 
         # combine with crop from predictions
         if predicted_sample_maps is not None and model_weight > 0.0:
@@ -415,12 +414,12 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
         output_map = unknown_map(window_size_px, unknown_value=unknown_value)
     elif map_known:
         # map location known: align to map pixels and zero rotation
-        output_map = map_from_lds_train_data.rotated_crop(
-            semantic_map, location_px, 0.0, size=window_size_px, mask='none', pad_value=unknown_value)
+        output_map = rotated_crop(semantic_map, location_px, 0.0, size=window_size_px, mask='none',
+                                  pad_value=unknown_value)
     else:
         # map location unknown: align to exact centre of window and agent's ground truth orientation
-        output_map = map_from_lds_train_data.rotated_crop(
-            semantic_map, location_fpx, orientation, size=window_size_px, mask='inner-circle', pad_value=unknown_value)
+        output_map = rotated_crop(semantic_map, location_fpx, orientation, size=window_size_px, mask='inner-circle',
+                                  pad_value=unknown_value)
         location_alignment_offset_fpx = (0, 0)
 
     # generate LDS semantic map
@@ -512,6 +511,133 @@ def get_location_range(semantic_map, exclude_border=False, **kwargs):
         high_px = np.array((w - 0.5001, h - 0.5001))
 
     return low_px * pixel_size, high_px * pixel_size
+
+
+# Considerations:
+# - Usually operating with a large crop that spans much of the original image.
+# Algorithm:
+# - Rotates the full image in the opposite direction,
+#   with some extra padding so we don't lose anything
+# - Then takes a simple rectangular crop
+def rotated_crop(image, centre, angle, size, **kwargs):
+    """
+    Takes a crop of a particular size and angle from any image-like source.
+    Fills in any unknown areas with configurable pad values, and optionally applies a circular mask.
+
+    Note that this method behaves a little differently to a simple image rotation.
+    The result is that the crop-window itself is rotated, counterclockwise. This
+    results in the cropped section of the original image being rotated clockwise by the same amount.
+
+    Args:
+      image: array (r,c) of bool, uint8, float32, etc.
+        The image to take a crop from.
+      centre: [x,y] of float
+        Centre of the crop, with sub-pixel precision.
+        May be outside the image bounds.
+      angle: float
+        The angle of the crop in radians, counterclockwise.
+      size: [w,h] of int
+        The size of the crop.
+
+    Keyword Args:
+      pad_value: scalar or array (C)
+        Value to use for padding and masking.
+        If an array, must have length equal to the number of channels.
+      mask: str (optional), default: 'none
+        The mask to apply after cropping, blanking anything
+        that isn't accepted by the mask (uses pad_value).
+        Mask is one of:
+          - 'none' - do mask
+          - 'inner-circle' - retains only the inner circle
+      interpolation: any OpenCV2 interpolation flag, default: cv2.INTER_NEAREST
+    """
+    # config
+    mask = kwargs.get('mask', 'none')
+    pad_value = kwargs.get('pad_value', 0.0)
+    interpolation = kwargs.get('interpolation', cv2.INTER_NEAREST)
+    n_channels = image.shape[-1]
+    pad_value = pad_value if np.size(pad_value) == n_channels else np.repeat(pad_value, n_channels)
+
+    # handle boolean image types
+    target_type = image.dtype
+    if target_type == 'bool':
+        image = image.astype(np.uint8)
+
+    # pad original image so we don't lose things when we rotate it
+    # The amount of pad required differs by:
+    #   - image size
+    #       - roughly, adding an extra sqrt(1/2)*image_width to cope with the image
+    #         being rotated about centre without loosing its corners.
+    #   - crop location and size
+    #       - if we're rotating about a point on the edge of the image, then we
+    #         want room available in the target location for the crop
+    # Experiments have shown that we only need to cope with the latter.
+
+    # config
+    # (normalise data type)
+    centre = np.array(centre).astype(np.float32)
+
+    # eventual crop window without clipping
+    # (using some calculations as below, but note that we'll need to re-calculate after padding
+    #  shifts the coords)
+    x1 = int(centre[0] - (size[0] - 1) / 2)
+    x2 = int(centre[0] - (size[0] - 1) / 2) + size[0]
+    y1 = int(centre[1] - (size[1] - 1) / 2)
+    y2 = int(centre[1] - (size[1] - 1) / 2) + size[1]
+
+    # Apply padding
+    # (note that opencv is designed for images so only takes a scalar for 'value'.
+    #  So we have to convert to the pad_value afterwards)
+    pad_x1 = max(0, -x1)
+    pad_x2 = max(0, x2 - image.shape[1])
+    pad_y1 = max(0, -y1)
+    pad_y2 = max(0, y2 - image.shape[0])
+    if max(pad_x1, pad_x2, pad_y1, pad_y2) > 0:
+        image = cv2.copyMakeBorder(image, pad_y1, pad_y2, pad_x1, pad_x2, cv2.BORDER_CONSTANT, value=0)
+
+    # update coords after padding
+    h, w = image.shape[0:2]
+    centre = (centre[0] + pad_x1, centre[1] + pad_y1)
+
+    # rotate whole image about the (revised) centre point
+    rotation_matrix = cv2.getRotationMatrix2D(centre, -np.rad2deg(angle), scale=1.0)
+    rotated = cv2.warpAffine(image, rotation_matrix, (w, h), flags=interpolation)
+
+    # take crop around the (revised) centre point
+    # (here we have to convert from sub-pixel resolution to pixels,
+    #  we take the mathematical floor on the left/top edge of the crop.
+    #  It's important to note that this places our target centre slightly biased
+    #  towards the bottom/right edge of the crop)
+    # (the following has been verified to produce accurate results on small odd and even sizes)
+    x1 = int(centre[0] - (size[0] - 1) / 2)
+    x2 = int(centre[0] - (size[0] - 1) / 2) + size[0]
+    y1 = int(centre[1] - (size[1] - 1) / 2)
+    y2 = int(centre[1] - (size[1] - 1) / 2) + size[1]
+    cropped = rotated[y1:y2, x1:x2, ...]
+
+    # apply mask
+    if mask == 'none':
+        pass
+    elif mask == 'inner-circle':
+        # the following has been verified to produce accurate results on small odd and even sizes
+        crop_radius = (np.min(size) - 1) / 2
+        y, x = np.ogrid[:size[1], :size[0]]
+        mask = ((x - int(size[0] / 2)) ** 2 + (y - int(size[1] / 2)) ** 2) <= crop_radius ** 2
+        # broadcasting doesn't cope for some reason so manually expand mask if needed
+        if cropped.ndim == 3:
+            mask = mask[:, :, np.newaxis]
+        cropped = cropped * mask
+    else:
+        raise ValueError(f"Unknown mask type: {mask}")
+
+    # Apply pad_value for all empty pixels
+    cropped[np.max(cropped, axis=-1) == 0, :] = pad_value
+
+    # convert back to target type
+    if target_type == 'bool':
+        cropped = cropped.astype(bool)
+
+    return cropped
 
 
 def for_model_training(inputs, outputs, metadata):
