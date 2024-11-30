@@ -9,6 +9,7 @@ def run_test_suite():
     get_intersect_ranges_test()
     get_intersect_ranges_tf_test()
     compute_model_revisement_weight_test()
+    rotated_crop_test()
 
 
 def get_intersect_ranges_test():
@@ -125,3 +126,170 @@ def compute_model_revisement_weight_test():
     assert DatasetRevisor.compute_model_revisement_weight(99, 100) == 1.0
     assert DatasetRevisor.compute_model_revisement_weight(100, 100.0) == 1.0
     assert DatasetRevisor.compute_model_revisement_weight(200, 100.0) == 1.0
+
+
+def rotated_crop_test():
+    def test_image_at_90(angle):
+        g = np.array([
+            [0., 0., 0., 1., 0., 0., 0.],
+            [0., 0., 0., 1., 0., 0., 0.],
+            [0., 0., 0., 1., 0., 0., 0.],
+            [1., 1., 1., 1., 1., 1., 1.],
+            [0., 0., 0., 1., 0., 0., 0.],
+            [0., 0., 0., 1., 0., 0., 0.],
+            [0., 0., 0., 1., 0., 0., 0.],
+        ])
+        b = np.array([
+            [1., 0., 0., 0., 0., 0., 1.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [1., 0., 0., 0., 0., 0., 1.],
+        ])
+        # add non-symmetry
+        if angle == 0:
+            g[3, 6] = 0
+        elif angle == 90:
+            g[0, 3] = 0
+        elif angle == 180:
+            g[3, 0] = 0
+        elif angle == -90:
+            g[6, 3] = 0
+        else:
+            raise ValueError(angle)
+        r = np.ones_like(g) - g - b
+        return np.dstack((r, g, b))
+
+    def test_image_at_45(angle):
+        g = np.array([
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 1., 0., 0., 0., 1., 0.],
+            [0., 0., 1., 0., 1., 0., 0.],
+            [0., 0., 0., 1., 0., 0., 0.],
+            [0., 0., 1., 0., 1., 0., 0.],
+            [0., 1., 0., 0., 0., 1., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+        ])
+        b = np.array([
+            [1., 1., 0., 0., 0., 1., 1.],
+            [1., 0., 0., 0., 0., 0., 1.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [1., 0., 0., 0., 0., 0., 1.],
+            [1., 1., 0., 0., 0., 1., 1.],
+        ])
+        # add non-symmetry
+        if angle == 45:
+            g[1, 5] = 0
+        elif angle == 135:
+            g[1, 1] = 0
+        elif angle == -135:
+            g[5, 1] = 0
+        elif angle == -45:
+            g[5, 5] = 0
+        else:
+            raise ValueError(angle)
+        r = np.ones_like(g) - g - b
+        return np.dstack((r, g, b))
+
+    def inner_circle_mask(inp):
+        mask = np.array([
+            [1., 1., 1., 0., 1., 1., 1.],
+            [1., 0., 0., 0., 0., 0., 1.],
+            [1., 0., 0., 0., 0., 0., 1.],
+            [0., 0., 0., 0., 0., 0., 0.],
+            [1., 0., 0., 0., 0., 0., 1.],
+            [1., 0., 0., 0., 0., 0., 1.],
+            [1., 1., 1., 0., 1., 1., 1.],
+        ])
+        out = inp.copy()
+        out[mask == 1.0, 0] = 0.
+        out[mask == 1.0, 1] = 0.
+        out[mask == 1.0, 2] = 1.
+        return out
+
+    def extend_image(inp, pad_value):
+        """ Inserts a column at the front and a row at the bottom """
+        # insert column at front
+        inp = np.insert(inp, 0, pad_value, axis=1)
+        # insert row at bottom
+        inp = np.insert(inp, inp.shape[0], pad_value, axis=0)
+        return inp
+
+    # 90-degree rotations without mask
+    pad_value = np.array([0., 0., 1.])
+    img = test_image_at_90(0)
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(0), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_90(0))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(90), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_90(-90))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(180), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_90(180))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(-90), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_90(90))
+
+    # 45-degree rotations without mask
+    img = test_image_at_90(0)
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(45), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_45(-45))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(135), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_45(-135))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(-135), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_45(135))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(-45), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_45(45))
+
+    # 90-degree rotations with mask
+    img = test_image_at_90(0)
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(0), size=(7, 7), mask='inner-circle',pad_value=pad_value),
+        inner_circle_mask(test_image_at_90(0)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(90), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_90(-90)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(180), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_90(180)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(-90), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_90(90)))
+
+    # 45-degree rotations with mask
+    img = test_image_at_90(0)
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(45), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_45(-45)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(135), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_45(-135)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(-135), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_45(135)))
+    assert np.array_equal(
+        rotated_crop(img, (3, 3), np.deg2rad(-45), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_45(45)))
+
+    # various crops from a larger image
+    img = extend_image(test_image_at_90(0), pad_value)
+    assert np.array_equal(
+        rotated_crop(img, (4, 3), np.deg2rad(90), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_90(-90))
+    assert np.array_equal(
+        rotated_crop(img, (4, 3), np.deg2rad(45), size=(7, 7), mask='none', pad_value=pad_value),
+        test_image_at_45(-45))
+    assert np.array_equal(
+        rotated_crop(img, (4, 3), np.deg2rad(-45), size=(7, 7), mask='inner-circle', pad_value=pad_value),
+        inner_circle_mask(test_image_at_45(45)))
+
+
