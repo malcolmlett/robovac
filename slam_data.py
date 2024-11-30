@@ -421,6 +421,7 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
         # map location unknown: align to exact centre of window and agent's ground truth orientation
         output_map = map_from_lds_train_data.rotated_crop(
             semantic_map, location_fpx, orientation, size=window_size_px, mask='inner-circle', pad_value=unknown_value)
+        location_alignment_offset_fpx = (0, 0)
 
     # generate LDS semantic map
     # (oriented according to agent's believed orientation, which omits the orientation_error,

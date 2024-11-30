@@ -102,7 +102,7 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
       max_distance: float, default: __MAX_DISTANCE__
         Maximum distance that an LDS can observe (unit: output units)
         Anything further than this is omitted from the results.
-      noise_ranges: List of list (4,), default: __NOISE_RANGES
+      noise_ranges: List of list (4,), default: __NOISE_RANGES__
         Each entry has: [start (inclusive), end (exclusive), std.dev, mode].
         The amount of gaussian noise to add to the results.
         Mode is one of: 'abs', 'factor'
