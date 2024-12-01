@@ -1,4 +1,5 @@
 # Robovac Neural Network Project
+
 What does it take to build the AI for a robovac using Neural Networks for each of the components?
 
 I have a cheap brand of robovac at home and the mistakes it routinely makes are a constant frustration. As
@@ -9,7 +10,9 @@ Keep in mind that this is being carried out as a learning exercise. In a real-wo
 some parts of the system would be better implemented using known algorithms that are more accurate and reliable
 than neural networks.
 
+
 ## Components
+
 The development of this project has a number of stages. Each stage focuses on a different component of the
 overall solution, with the final solution combining and orchestrating these components in a larger system.
 
@@ -69,6 +72,17 @@ is much harder to identify; 2) it is faster to develop and test smaller and simp
 this gives the opportunity to experiment with different forms of network and learning algorithm; 4) In order to
 implement online fine-tuning, I need key outputs from each component to feed into the loss function.
 
+
 ## Experiments
+
 Each development stage goes through many experiments. They are available under the various `experiments-xxx` folders:
 * [experiments-slam](experiments-slam/README.md)
+
+
+## Acknowledgments
+
+The DeepLearning.AI
+[Deep Learning Specialization](https://www.deeplearning.ai/courses/deep-learning-specialization/) course by Andrew Ng
+has had a profound influence on the development of this work. Dr. Ng's advise for troubleshooting models and on
+where to focus improvement effort is an ongoing guide. The original UNet that the SLAM model is based on was heavily
+inspired by the example presented within the course.
