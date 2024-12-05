@@ -228,6 +228,8 @@ def compile_model(model, **kwargs):
     keras350_workaround = (tf.keras.__version__ >= '3.5.0')
 
     if keras350_workaround:
+        print(f"WARNING: Keras 3.5.0 workaround activated (current version {tf.keras.__version__}) - "
+              f"skipping use of dictionory for multi-output model loss functions")
         loss = (
             MapLoss(from_logits=output_logits),
             ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
