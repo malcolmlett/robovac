@@ -428,7 +428,7 @@ def generate_training_data_sample(semantic_map, location, orientation, map_known
     #  and is 0.0 if completely unknown)
     believed_orientation = orientation if map_known and np.isfinite(orientation_error) else 0.0
     lds_map = lds.lds_to_occupancy_map(
-        ranges, angle=believed_orientation, size_px=window_size_px, centre_px=location_alignment_offset_fpx,
+        ranges, angle=believed_orientation, size_px=window_size_px, centre_offset_px=location_alignment_offset_fpx,
         pixel_size=pixel_size)
 
     return input_map, lds_map, output_map, location_alignment_offset_fpx
@@ -851,7 +851,7 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
     ranges = lds.lds_sample(occupancy_map, locs[0], orientations[0], **kwargs)
     first_map = lds.lds_to_occupancy_map(
         ranges, angle=orientations[0], size_px=window_size_px,
-        centre_px=locs_alignment_offset_fpx[0], pixel_size=pixel_size)
+        centre_offset_px=locs_alignment_offset_fpx[0], pixel_size=pixel_size)
 
     lds_maps = np.zeros((locs.shape[0],) + first_map.shape)
     lds_maps[0] = first_map
@@ -859,7 +859,7 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
         ranges = lds.lds_sample(occupancy_map, locs[i], orientations[i], **kwargs)
         lds_map = lds.lds_to_occupancy_map(
             ranges, angle=orientations[i], size_px=window_size_px,
-            centre_px=locs_alignment_offset_fpx[i], pixel_size=pixel_size)
+            centre_offset_px=locs_alignment_offset_fpx[i], pixel_size=pixel_size)
         lds_maps[i] = lds_map
 
     # Do semantic map generation
@@ -973,7 +973,8 @@ def pre_sampled_crop(centre, size_px, sample_locations, sample_maps, **kwargs):
     # combine chosen samples
     centre_px = tf.cast(tf.round(centre / lds.__PIXEL_SIZE__), tf.int32)
     window_radius_px = (size_px - 1) // 2
-    output_range_px = tf.stack([centre_px[0] - window_radius_px[0], centre_px[1] - window_radius_px[1], size_px[0], size_px[1]])
+    output_range_px = tf.stack([centre_px[0] - window_radius_px[0], centre_px[1] - window_radius_px[1],
+                                size_px[0], size_px[1]])
 
     combined_map, _ = combine_semantic_maps(
         tf.gather(sample_locations, sample_indices),

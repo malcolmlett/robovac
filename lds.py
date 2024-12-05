@@ -173,6 +173,10 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
     # - ranges < min distance are dropped (unseen)
     # - ranges > max distance are dropped (unseen)
     # - ranges within a given accuracy band have gaussian noise added
+    # - noise is added AFTER limiting by range, otherwise the noise becomes one-sided at the extremes
+    # - can result in ranges < MIN_DISTANCE and > MAX_DISTANCE
+    ranges[ranges < min_distance] = np.nan
+    ranges[ranges > max_distance] = np.nan
     if noise_ranges is not None:
         for start, end, stddev, mode in noise_ranges:
             mask = (ranges >= start) & (end is None or ranges < end)
@@ -184,8 +188,6 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
             else:
                 raise ValueError(f"Unknown noise range mode: {mode}")
             ranges[mask] += noise[mask]
-    ranges[ranges < min_distance] = np.nan
-    ranges[ranges > max_distance] = np.nan
 
     return ranges
 
@@ -193,16 +195,18 @@ def lds_sample(occupancy_map, centre=(0.0, 0.0), angle=0.0, **kwargs):
 def lds_to_occupancy_map(ranges, angle, **kwargs):
     """
     Converts LDS range data to a binary occupancy map.
-    :param ranges: array (n,) - range values may contain nans, which are dropped
-    :param angle: angle of first range (radians)
-    :param kwargs
+    Any range data that beyond the bounds of the output map are quietly dropped.
+
+    Args:
+        ranges: array (n,) - range values may contain nans, which are dropped
+        angle: angle of first range (radians)
 
     Keyword args:
       pixel_size: float, default: __PIXEL_SIZE__
       size_px: int/float or tuple (h, w), default: ceil(__MAX_DISTANCE__/__PIXEL_SIZE__)*2+1
         Size of output map in pixels.
         Warning: currently causes errors if there's any ranges that don't fit within the window.
-      centre_px: tuple, float (x,y), relative to map centre (unit: pixels)
+      centre_offset_px: tuple, float (x,y), relative to map centre (unit: pixels, sub-pixel resolution)
         Usually centres LDS data exactly on centre of generated map (to sub-pixel resolution).
         Use this to shift by some amount.
       encoding: one of 'nn', 'antialiased', 'nn+offset':
@@ -211,33 +215,43 @@ def lds_to_occupancy_map(ranges, angle, **kwargs):
         (TODO) nn+offset: picks single NN pixel, but on second and third channels adds
           x and y offset (-0.5 .. +0.5) in sub-pixel resolution
 
-    :return: array (h,w) of floats in range [0,1]
+    Returns:
+        array (h,w) of floats in range [0,1]
     """
 
     # config
     pixel_size = kwargs.get('pixel_size', __PIXEL_SIZE__)
-    centre_px = kwargs.get('centre_px', (0.0, 0.0))
+    centre_offset_px = kwargs.get('centre_offset_px', (0.0, 0.0))
     size_px = kwargs.get('size_px', np.ceil(__MAX_DISTANCE__ / __PIXEL_SIZE__).astype(int) * 2 + 1)
     size_px = np.array(size_px) if np.size(size_px) == 2 else np.array([size_px, size_px])
 
-    map_centre_fpx = np.array((size_px-1) / 2) + np.array(centre_px)
+    map_centre_fpx = np.array((size_px-1) / 2) + np.array(centre_offset_px)
 
     lds_points = lds_to_2d(ranges, (0, 0), angle)
     lds_points_px = np.round(lds_points/pixel_size + map_centre_fpx).astype(int)
-    lds_map = np.full(size_px, 0.0, dtype=np.float32)
-    lds_map[lds_points_px[:, 1], lds_points_px[:, 0]] = 1.0
+
+    # mask to include only points within window range
+    mask = (lds_points_px[:, 0] >= 0) & (lds_points_px[:, 0] < size_px[0]) & \
+           (lds_points_px[:, 1] >= 0) & (lds_points_px[:, 1] < size_px[1])
+
+    lds_map = np.zeros(size_px, dtype=np.float32)
+    lds_map[lds_points_px[mask, 1], lds_points_px[mask, 0]] = 1.0
 
     return lds_map
 
 
 def lds_to_2d(ranges, centre, angle):
     """
-    Converts LDS range data to Euclidean coordinates.
+    Basic conversion of LDS range data to Euclidean coordinates, with minimal other logic.
     Applies a unit-less conversion, retaining the same unit in the 2D coords as used by the range values.
-    :param ranges: array (n,) - range values may contain nans, which are dropped
-    :param centre: array (2,) = [x,y] - centre point for ranges
-    :param angle: angle of first range (radians)
-    :return: array (n,2) of [x,y] coords (without nans)
+    Removes nan ranges, but applies no other filtering.
+
+    Args:
+        ranges: array (n,) - range values may contain nans, which are dropped
+        centre: array (2,) = [x,y] - centre point for ranges
+        angle: angle of first range (radians)
+    Returns:
+        array (n,2) of [x,y] coords (without nans)
     """
     angles = np.linspace(0, np.pi * 2, num=ranges.shape[0], endpoint=False) + angle
     steps = np.column_stack((np.cos(angles), -np.sin(angles)))
