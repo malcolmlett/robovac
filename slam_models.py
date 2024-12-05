@@ -125,7 +125,7 @@ def slam_model(map_shape, conv_filters=32, adlo_units=256, **kwargs):
 
     # Sanity check
     if np.size(map_shape) != 3:
-        raise ValueError("Map shape must have 3 dims, found {np.size(map_shape)}")
+        raise ValueError(f"Map shape must have 3 dims, found {np.size(map_shape)}")
 
     # Prepare map input
     # (pad so it's a multiple of our down/up-scaling blocks)
@@ -199,8 +199,10 @@ def slam_model(map_shape, conv_filters=32, adlo_units=256, **kwargs):
     print(f"  Skip-connections: {merge_mode}")
     print(f"  Output scaling:   {'logits' if output_logits else 'scaled'}")
     print(f"  DLO encoding:     {dlo_encoding}")
+    print(f"  Layers:           {len(model.layers)")
     print(f"  Inputs:           {model.inputs}")
     print(f"  Outputs:          {model.outputs}")
+    print(f"  Output names:     {model.output_names}")
     print(f"  Compiled:         {do_compile}")
     return model
 
@@ -221,23 +223,31 @@ def compile_model(model, **kwargs):
     verbose_history = kwargs.get('verbose_history', False)
     dlo_encoding = kwargs.get('dlo_encoding', 'linear/importance')
 
-    if verbose_history:
-        model.compile(optimizer='adam',
-                      loss={
-                          'map_output': MapLoss(from_logits=output_logits),
-                          'adlo_output': ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
-                      },
-                      metrics={
-                          'map_output': [MapLoss(from_logits=output_logits), MapAccuracy(), ObstructionAccuracy()],
-                          'adlo_output': [ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding),
-                                          AcceptAccuracy(), LocationError(), OrientationError()]
-                      })
+    # Keras 3.5.0 workaround for dictionary-based loss functions on multi-output models
+    # https://github.com/keras-team/keras/issues/20596
+    keras350_workaround = (tf.keras.__version__ >= '3.5.0')
+
+    if keras350_workaround:
+        loss = (
+            MapLoss(from_logits=output_logits),
+            ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
+        )
     else:
-        model.compile(optimizer='adam',
-                      loss={
-                          'map_output': MapLoss(from_logits=output_logits),
-                          'adlo_output': ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
-                      })
+        loss = {
+            'map_output': MapLoss(from_logits=output_logits),
+            'adlo_output': ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding)
+        }
+
+    if verbose_history:
+        metrics = {
+            'map_output': [MapLoss(from_logits=output_logits), MapAccuracy(), ObstructionAccuracy()],
+            'adlo_output': [ADLOLoss(from_logits=output_logits, dlo_encoding=dlo_encoding),
+                            AcceptAccuracy(), LocationError(), OrientationError()]
+        }
+    else:
+        metrics = None
+
+    model.compile(optimizer='adam', loss=loss, metrics=metrics)
 
 
 def slam_down_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
