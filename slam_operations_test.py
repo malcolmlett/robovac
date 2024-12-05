@@ -7,6 +7,6 @@ def run_test_suite():
 
 
 def get_contour_pxcoords_test():
-    trajectory = load_trajectory_pxcoords('repo/data/experimental-floorplan2-with-trajectory.png')
+    trajectory = load_trajectory_pxcoords('repo/data/experimental-floorplan2.png')
     assert trajectory.ndim == 2
     assert trajectory.shape[1] == 2
