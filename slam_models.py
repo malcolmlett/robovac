@@ -199,7 +199,7 @@ def slam_model(map_shape, conv_filters=32, adlo_units=256, **kwargs):
     print(f"  Skip-connections: {merge_mode}")
     print(f"  Output scaling:   {'logits' if output_logits else 'scaled'}")
     print(f"  DLO encoding:     {dlo_encoding}")
-    print(f"  Layers:           {len(model.layers)")
+    print(f"  Layers:           {len(model.layers)}")
     print(f"  Inputs:           {model.inputs}")
     print(f"  Outputs:          {model.outputs}")
     print(f"  Output names:     {model.output_names}")
