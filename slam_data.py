@@ -877,12 +877,15 @@ def take_samples_covering_map(semantic_map, model=None, **kwargs):
 
 def _predict_maps(model, lds_maps):
     """
+    Internal method for take_samples_covering_map.
     Uses the model to predict the semantic maps.
     Return:
       nd.array (N,W,H,C), predicted semantic maps
     """
+    batch_size = lds_maps.shape[0]
     window_size_px = [lds_maps.shape[1], lds_maps.shape[2]]
-    unknown_maps = tf.tile(unknown_map(window_size_px), lds_maps.shape[0])
+    single_unknown_map = unknown_map(window_size_px)
+    unknown_maps = tf.tile(tf.expand_dims(single_unknown_map, axis=0), multiples=(batch_size, 1, 1, 1))
     (semantic_maps, adlos) = model.predict((unknown_maps, lds_maps))
     semantic_maps = tf.math.softmax(semantic_maps, axis=-1)
     return tf.cast(semantic_maps, tf.float32)
