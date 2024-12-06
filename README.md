@@ -10,43 +10,60 @@ Keep in mind that this is being carried out as a learning exercise. In a real-wo
 some parts of the system would be better implemented using known algorithms that are more accurate and reliable
 than neural networks.
 
+![SLAM trajectory](doc/example-floorplan-with-trajectory.png)
+
+
+## Notebooks
+
+* [SLAM.ipynb](SLAM.ipynb)
+  * SLAM model and training 
+
 
 ## Components
 
 The development of this project has a number of stages. Each stage focuses on a different component of the
 overall solution, with the final solution combining and orchestrating these components in a larger system.
 
-Development is presently towards the end of development of the first stage.
+There are a number of reasons for choosing a modularised solution over an end-to-end one: 1) it is easier
+to conceptualise the individual components, whereas the right architecture for a complete end-to-end system
+is much harder to identify; 2) it is faster to develop and test smaller and simpler individual components; 3)
+this gives the opportunity to experiment with different forms of network and learning algorithm; 4) key outputs from
+the components need to have clear interpretations for use in hand-crafted loss functions used in online fine-tuning.
 
 Stages are as follows, see referenced notebooks for detailed design and outcomes.
 
-1. SLAM
-   * See: [SLAM.ipynb](SLAM.ipynb)
-   * The agent needs to perform Simultaneous Localisation and Mapping (SLAM) while it explores
-     and navigates within the environment.
-   * This component is passive w.r.t. navigation in the environment. It depends on the other components
-     for the generation of motor commands.
-   * Uses supervised learning and a modified U-Net
+### 1. SLAM (Under active development)
+* See: [SLAM.ipynb](SLAM.ipynb)
+* The agent needs to perform Simultaneous Localisation and Mapping (SLAM) while it explores
+  and navigates within the environment.
+* This component is passive w.r.t. navigation in the environment. It depends on the other components
+  for the generation of motor commands.
+* Uses supervised learning and a modified U-Net
 
-2. Planning
-   * The agent needs to plan a route around the environment that most efficiently covers the floor area during
-     vacuuming.
-   * This also includes choosing the most appropriate operation mode depending on the agent's current state.
-     The agent should explore a new environment, clean a known environment, and return to the charging station
-     when the floor is clean or its battery is low. If floor cleaning was recently interrupted, it should resume
-     where it left off without repeating areas already cleaned.
-   * This component depends on accurate mapping output from the SLAM component.
-   * Model architecture yet to be decided. Likely either supervised learning with a CNN, or RL with a high-level
-     policy network.
+Recent result:
 
-3. Motor Policy
-   * The agent needs to generate fine-grained motor control signals in order to follow its plan.
-   * This is the low-level view of action control that works in conjunction with the Planning component as the
-     high-level view of action control. The high-level view operates against course-grained mapping information
-     and generates course-grained plans while the low-level view translates that course-grained plans into
-     fine-grained real-world motion.
-   * Uses RL (reinforcement learning) and a policy network.
+![SLAM outcome](doc/example-slam-output.png)
 
+### 2. Planning (Next stage)
+* The agent needs to plan a route around the environment that most efficiently covers the floor area during
+  vacuuming.
+* This also includes choosing the most appropriate operation mode depending on the agent's current state.
+  The agent should explore a new environment, clean a known environment, and return to the charging station
+  when the floor is clean or its battery is low. If floor cleaning was recently interrupted, it should resume
+  where it left off without repeating areas already cleaned.
+* This component depends on accurate mapping output from the SLAM component.
+* Model architecture yet to be decided. Likely either supervised learning with a CNN, or RL with a high-level
+  policy network.
+
+### 3. Motor Policy
+* The agent needs to generate fine-grained motor control signals in order to follow its plan.
+* This is the low-level view of action control that works in conjunction with the Planning component as the
+  high-level view of action control. The high-level view operates against course-grained mapping information
+  and generates course-grained plans while the low-level view translates that course-grained plans into
+  fine-grained real-world motion.
+* Uses RL (reinforcement learning) and a policy network.
+
+### Later Stages
 A number of additional stages of development could also be carried out which modify or enhance what's build so far:
 
 * Online Learning
@@ -66,17 +83,21 @@ A number of additional stages of development could also be carried out which mod
       to work in real-time without a GPU.
     * Techniques to makes the models smaller need to be employed to make them fit onto a real robovac.
 
-There are a number of reasons for choosing a modularised solution over an end-to-end one: 1) it is easier
-to conceptualise the individual components, whereas the right architecture for a complete end-to-end system
-is much harder to identify; 2) it is faster to develop and test smaller and simpler individual components; 3)
-this gives the opportunity to experiment with different forms of network and learning algorithm; 4) In order to
-implement online fine-tuning, I need key outputs from each component to feed into the loss function.
-
 
 ## Experiments
 
 Each development stage goes through many experiments. They are available under the various `experiments-xxx` folders:
 * [experiments-slam](experiments-slam/README.md)
+
+
+## Progress
+
+* 2024-Dec
+  * Working on improving SLAM accuracy and extending to a larger dataset.
+* 2024-Nov
+  * First complete SLAM model trained from a single floorplan and ~200 epochs. Didn't do so well.
+* 2024-Oct
+  * Project kick-off
 
 
 ## Acknowledgments
