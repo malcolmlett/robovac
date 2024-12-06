@@ -453,7 +453,8 @@ def animate_trajectory(floorplan, coords, angles, filename=None, **kwargs):
             frames.append(iio.imread(frame_filename))
 
     if filename is not None:
-        iio.imwrite(filename, frames, fps=fps)
+        # loop=0 -> repeat indefinitely
+        iio.imwrite(filename, frames, fps=fps, loop=0)
         print()
         print(f"Animation saved to: {filename}")
 
@@ -594,10 +595,11 @@ def animate_slam(floorplan, locations, orientations, model, filename=None, **kwa
 
             # in case user stops generation early, save gif every 50 frames
             if i % 50 == 0:
-                iio.imwrite(filename, frames, fps=fps)
+                iio.imwrite(filename, frames, fps=fps, loop=0)
 
     if filename is not None:
-        iio.imwrite(filename, frames, fps=fps)
+        # loop=0 -> repeat indefinitely
+        iio.imwrite(filename, frames, fps=fps, loop=0)
         print()
         print(f"Animation saved to: {filename}")
 
