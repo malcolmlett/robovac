@@ -1145,6 +1145,11 @@ def combine_semantic_maps(locs, semantic_maps, **kwargs):
     # combine
     out = tf.cast(tf.concat([out[..., 0:2], out_unknown], axis=-1), tf.float32)
 
+    # clip
+    # - the above maths is a little unstable and sometimes produces values outside of range
+    # - I'm just applying a simplistic approach of clipping, on the basis that it does the least damage
+    out = tf.clip_by_value(out, 0.0, 1.0)
+
     return out, location_start
 
 
