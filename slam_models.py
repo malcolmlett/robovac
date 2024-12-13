@@ -225,7 +225,7 @@ def compile_model(model, **kwargs):
 
     # Keras 3.5.0 workaround for dictionary-based loss functions on multi-output models
     # https://github.com/keras-team/keras/issues/20596
-    keras350_workaround = (tf.keras.__version__ >= '3.5.0')
+    keras350_workaround = (tf.keras.__version__ >= '3.5.0') and (tf.keras.__version__ < '3.7.0')
 
     if keras350_workaround:
         print(f"WARNING: Keras 3.5.0 workaround activated (current version {tf.keras.__version__}) - "
