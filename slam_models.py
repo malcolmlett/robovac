@@ -252,13 +252,13 @@ def compile_model(model, **kwargs):
     model.compile(optimizer='adam', loss=loss, metrics=metrics)
 
 
-def slam_down_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
+def slam_down_block(input, n_filters, dropout_prob=0.0, max_pooling=True):
     """
     Convolutional downsampling block within one input arm
     of the UNet-with-skip-connections.
 
     Args:
-      inputs:
+      input:
         Input tensor
       n_filters: int
         Number of filters for the convolutional layers
@@ -276,12 +276,11 @@ def slam_down_block(inputs, n_filters, dropout_prob=0.0, max_pooling=True):
                   kernel_size=(3, 3),
                   activation='relu',
                   padding='same',
-                  kernel_initializer='he_normal')(inputs)
+                  kernel_initializer='he_normal')(input)
     conv = Conv2D(filters=n_filters,
                   kernel_size=(3, 3),
                   activation='relu',
                   padding='same',
-                  # set 'kernel_initializer' same as above
                   kernel_initializer='he_normal')(conv)
 
     # dropout for some layers
@@ -360,10 +359,14 @@ def adlo_block(input, n_units, output_logits, dlo_encoding):
     - delta y: -0.5 .. +0.5 - percentage of window width to add to current estimated y-location
     - delta angle: -1.0 .. +1.0 - fraction of pi (+/-) to add to current estimated orientation
 
-    :param input: Input tensor
-    :param n_units: number of units in hidden layers
-    :param output_logits: whether to output accept as logits or scaled. delta x/y/angle always scaled
-    :return: adlo output (B,4)
+    Args:
+      input: Input tensor usually taken from bottom of UNet
+      n_units: Number of units in hidden layers
+      output_logits: whether to output accept as logits or scaled. delta x/y/angle always scaled
+      dlo_encoding: encoding/loss-function string for DLO output
+
+    Returns:
+      adlo output layer (B,4)
     """
 
     # Reduce the level of dimensionality and flatten
