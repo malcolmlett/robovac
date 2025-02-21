@@ -622,8 +622,10 @@ class ADLOLoss(tf.keras.losses.Loss):
         if self._dlo_encoding.endswith('/log-cosh'):
             dlo_losses = tf.math.log(tf.cosh(dlo_pred - dlo_true))
         elif self._dlo_encoding.endswith('/linear'):
+            # L1 norm
             dlo_losses = tf.math.abs(dlo_pred - dlo_true)
         elif self._dlo_encoding.endswith('/importance'):
+            # L1 norm
             dlo_losses = tf.math.abs(dlo_pred - dlo_true)
 
             # For importance calculation we first convert dlo_true's value ranges as follows:
