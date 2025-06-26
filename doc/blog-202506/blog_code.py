@@ -224,3 +224,289 @@ class CoordGrid2D(layers.Layer):
         output = tf.concat([xx_tiled, yy_tiled], axis=-1)
         return output
 
+
+class StrideGrid2D(layers.Layer):
+    """
+    Inspired by the CoordGrid2D, but designed to be more convenient for strided spatial pooling.
+    The computed positions are relative to the stride window, rather than the global image.
+
+    Returns a (batch_size, height, width, 2) tensor with a grid of (x,y) coordinates.
+    Coordinates are aligned to the strides of an assumed subsequent pooling layer,
+    and indicate the relative position of the cell in the pool, relative to the
+    pool's centre.
+    For example, with stride=2, each 2x2 sub-grid has coordinates:
+       [[-0.5,-0.5], [+0.5,-0.5]],
+        [-0.5,+0.5], [+0.5,+0.5]].
+
+    Generally this will be subsequently concatenated with the input tensor
+    before applying a position-wise pooling operation.
+    """
+    def __init__(self, strides=2, **kwargs):
+        super().__init__(**kwargs)
+        self.strides = (strides, strides) if np.isscalar(strides) else strides
+
+    def call(self, inputs):
+        # inputs.shape => [batch_size, height, width, channels]
+        batch_size, height, width, channels = tf.unstack(tf.shape(inputs))
+
+        # Generate a coordinate grid patch:
+        # - x_coords: shape (stride_width,) from -0.5 to 0.5
+        # - y_coords: shape (stride_height,) from -0.5 to 0.5
+        # - xx, yy shape => (stride_height, stride_width)
+        # - concatted: (stride_height, stride_width, 2)
+        stride_height, stride_width = self.strides
+        x_coords = tf.linspace(-0.5, 0.5, stride_width)
+        y_coords = tf.linspace(-0.5, 0.5, stride_height)
+        xx, yy = tf.meshgrid(x_coords, y_coords)
+        grid = tf.concat([tf.expand_dims(xx, axis=-1), tf.expand_dims(yy, axis=-1)], axis=-1)
+
+        # Tile across all patches in image
+        # - Tile, then pad if needed
+        # - (width, height, 2)
+        patch_count_x = width // stride_width
+        patch_count_y = height // stride_height
+        x_pad = tf.cast(width - patch_count_x * stride_width, tf.int32)
+        y_pad = tf.cast(height - patch_count_y * stride_height, tf.int32)
+        tiled = tf.tile(grid, [patch_count_x, patch_count_y, 1])
+        paddings = tf.stack([
+            tf.stack([0, y_pad]),
+            tf.stack([0, x_pad]),
+            tf.stack([0, 0])
+        ])
+        tiled = tf.pad(tiled, paddings, 'CONSTANT')
+
+        # Tile across batch dimension
+        output = tf.tile(tf.expand_dims(tiled, 0), [batch_size, 1, 1, 1])
+        return output
+
+
+class PositionwiseMaxPool2D(tf.keras.layers.Layer):
+    """
+    Inspired by max-pool, however, where max-pool treats each channel separately,
+    this groups all features together for a given 2D position. This in theory allows for more
+    direct transport of spatial information from a CoordGrid2D or StrideGrid2D input.
+
+    Pooling operation that selects all channels from the same position as a single unit.
+    Positions are chosen by arg-max over a reduction operation (sum-of-squares).
+
+    Use channel_weights to exclude some channels from the reduction.
+    For example, if the first 32 channels are from semantic features, while the last 2 channels
+    come from a CoordGrid2D input, then given the first 32 channels a weight of 1.0 each, and the last 2 channels a weight of 0.0.
+    This way only the semantic features are arg-maxed over. Otherwise the arg-max operation
+    will be biased towards the position with a larger coordinate value.
+    """
+
+    def __init__(self, pool_size=(2, 2), strides=None, channel_weights=None, **kwargs):
+        super().__init__(**kwargs)
+
+        self.pool_size = (pool_size, pool_size) if np.isscalar(pool_size) else pool_size
+        if strides is None:
+          self.strides = self.pool_size
+        else:
+          self.strides = (strides, strides) if np.isscalar(strides) else strides
+        self.channel_weights = channel_weights
+
+    def call(self, inputs):
+        batch_size, height, width, channels = tf.unstack(tf.shape(inputs))
+        ksize = self.pool_size
+        strides = self.strides
+
+        # Extract 2x2 patches: shape (B, H//2, W//2, 2, 2, C)
+        patches = tf.image.extract_patches(
+            images=inputs,
+            sizes=[1, ksize[0], ksize[1], 1],
+            strides=[1, strides[0], strides[1], 1],
+            rates=[1, 1, 1, 1],
+            padding='VALID'
+        )
+        patch_shape = tf.shape(patches)
+        out_h, out_w = patch_shape[1], patch_shape[2]
+
+        # Reshape to (B, out_h, out_w, 4, C)
+        patches = tf.reshape(patches, [batch_size, out_h, out_w, ksize[0]*ksize[1], channels])
+
+        # Compute reduction: (B, out_h, out_w, 4)
+        # - using sum-of-squares, which is equivalent to a norm() once argmax is applied
+        if self.channel_weights is None:
+          norms = tf.reduce_sum(tf.square(patches), axis=-1)
+        else:
+          norms = tf.reduce_sum(tf.square(patches) * self.channel_weights, axis=-1)
+
+        # Argmax to find winning positions: (B, out_h, out_w)
+        indices = tf.argmax(norms, axis=-1, output_type=tf.int32)
+
+        # Gather the full vectors corresponding to max-norm positions
+        one_hot = tf.one_hot(indices, depth=ksize[0]*ksize[1])  # shape: (B, out_h, out_w, 4)
+        one_hot = tf.expand_dims(one_hot, axis=-1)              # shape: (B, out_h, out_w, 4, 1)
+        output = tf.reduce_sum(one_hot * patches, axis=-2)      # shape: (B, out_h, out_w, C)
+
+        return output
+
+
+class AttentionPool2D(tf.keras.layers.Layer):
+    """
+    An alternative to MaxPool2D that tries to improve on gradient flow
+    by using a soft-argmax operation.
+
+    2D downsampling layer that computes a soft-argmax from one input to attend to the second input.
+    Typically used for softmax-weighted pooling of positional inputs, based
+    on the strength of the feature vectors.
+
+    Both inputs must have the same shape (B, H, W, C). Operates channel-wise.
+    Channels from each input are paired up, in sequence.
+
+    Output shape: (B, pooled_H, pooled_W, C).
+    """
+
+    def __init__(self, pool_size=(2, 2), strides=None, padding='valid', **kwargs):
+        super().__init__(**kwargs)
+
+        self.pool_size = (pool_size, pool_size) if np.isscalar(pool_size) else pool_size
+        if strides is None:
+          self.strides = self.pool_size
+        else:
+          self.strides = (strides, strides) if np.isscalar(strides) else strides
+        self.padding = padding.upper()
+
+    def call(self, keys, values):
+        batch_size, height, width, channels = tf.unstack(tf.shape(keys))
+        tf.assert_equal(tf.shape(keys), tf.shape(values), "Input tensors must have identical shape", summarize=4)
+        ksize = self.pool_size
+
+        # Extract pool patches, eg: (assuming 2x2) (B, H//2, W//2, 2, 2, C)
+        key_patches = tf.image.extract_patches(
+            images=keys,
+            sizes=[1, ksize[0], ksize[1], 1],
+            strides=[1, self.strides[0], self.strides[1], 1],
+            rates=[1, 1, 1, 1],
+            padding=self.padding
+        )
+        value_patches = tf.image.extract_patches(
+            images=values,
+            sizes=[1, ksize[0], ksize[1], 1],
+            strides=[1, self.strides[0], self.strides[1], 1],
+            rates=[1, 1, 1, 1],
+            padding=self.padding
+        )
+        patch_shape = tf.shape(key_patches)
+        out_h, out_w = patch_shape[1], patch_shape[2]
+
+        # Reshape to (B, out_h, out_w, 4, C)
+        key_patches   = tf.reshape(key_patches, [batch_size, out_h, out_w, ksize[0]*ksize[1], channels])
+        value_patches = tf.reshape(value_patches, [batch_size, out_h, out_w, ksize[0]*ksize[1], channels])
+
+        # Compute softmax-weighted mean of values, shape: (B, out_h, out_w, C)
+        attention_scores = tf.nn.softmax(key_patches, axis=-2)
+        output = tf.reduce_sum(attention_scores * value_patches, axis=-2)
+        return output
+
+
+class StridedSoftmax2D(tf.keras.layers.Layer):
+    """
+    Applies softmax to values within stride-patches.
+    Treats channels independently.
+
+    Used in conjunction with DotPool2D() to breaks out the steps of AttentionPool2D for easier interpretability.
+    However, this broken-out form is limited in its flexibility. It requires that stride patches are exactly adjacent
+    and non-overlapping.
+    """
+
+    def __init__(self, pool_size=(2, 2), strides=None, **kwargs):
+        super().__init__(**kwargs)
+
+        self.pool_size = (pool_size, pool_size) if np.isscalar(pool_size) else pool_size
+        if strides is None:
+          self.strides = self.pool_size
+        else:
+          self.strides = (strides, strides) if np.isscalar(strides) else strides
+        self.padding = 'valid'.upper()  # can only do if using 'valid' padding
+
+        if self.pool_size != self.strides:
+            raise ValueError("pool_size and strides must be the same")
+
+    def call(self, input):
+        batch_size, height, width, channels = tf.unstack(tf.shape(input))
+        ksize = self.pool_size
+
+        # Extract pool patches, eg: (assuming 2x2) (B, H//2, W//2, 2, 2, C)
+        # Then reshape to (B, out_h, out_w, 4, C)
+        patches = tf.image.extract_patches(
+            images=input,
+            sizes=[1, ksize[0], ksize[1], 1],
+            strides=[1, self.strides[0], self.strides[1], 1],
+            rates=[1, 1, 1, 1],
+            padding=self.padding
+        )
+        patch_shape = tf.shape(patches)
+        out_h, out_w = patch_shape[1], patch_shape[2]
+        patches = tf.reshape(patches, [batch_size, out_h, out_w, ksize[0]*ksize[1], channels])
+
+        # Compute softmax for each patch
+        patches = tf.nn.softmax(patches, axis=-2)
+
+        # Convert back to original shape
+        # - only possible when strides=pool_size and padding=valid
+        output = tf.reshape(patches, [batch_size, out_h, out_w, ksize[0], ksize[1], channels])
+        output = tf.transpose(output, [0, 1, 3, 2, 4, 5])  # eg: (B, H//2, 2, W//2, 2, C)
+        output = tf.reshape(output, [batch_size, height, width, channels])
+
+        return output
+
+
+class DotPool2D(tf.keras.layers.Layer):
+    """
+    2D downsampling layer that combines the values between two inputs via a flattened dot-product
+    applied patch-wise and channel-wise. Wordedly differently, it applies a weighted sum,
+    where the first input provides the weights and the second input provides the values.
+    However, you could equally phrase them the other way around.
+
+    Both inputs must have the same shape (B, H, W, C). Operates channel-wise.
+    Channels from each input are paired up, in sequence.
+
+    Output shape: (B, pooled_H, pooled_W, C).
+
+    Used in conjunction with DotPool2D() to breaks out the steps of AttentionPool2D for easier interpretability.
+    However, this broken-out form is limited in its flexibility. It requires that stride patches are exactly adjacent
+    and non-overlapping.
+    """
+
+    def __init__(self, pool_size=(2, 2), strides=None, padding='valid', **kwargs):
+        super().__init__(**kwargs)
+
+        self.pool_size = (pool_size, pool_size) if np.isscalar(pool_size) else pool_size
+        if strides is None:
+          self.strides = self.pool_size
+        else:
+          self.strides = (strides, strides) if np.isscalar(strides) else strides
+        self.padding = padding.upper()
+
+    def call(self, keys, values):
+        batch_size, height, width, channels = tf.unstack(tf.shape(keys))
+        tf.assert_equal(tf.shape(keys), tf.shape(values), "Input tensors must have identical shape", summarize=4)
+        ksize = self.pool_size
+
+        # Extract pool patches, eg: (assuming 2x2) (B, H//2, W//2, 2, 2, C)
+        key_patches = tf.image.extract_patches(
+            images=keys,
+            sizes=[1, ksize[0], ksize[1], 1],
+            strides=[1, self.strides[0], self.strides[1], 1],
+            rates=[1, 1, 1, 1],
+            padding=self.padding
+        )
+        value_patches = tf.image.extract_patches(
+            images=values,
+            sizes=[1, ksize[0], ksize[1], 1],
+            strides=[1, self.strides[0], self.strides[1], 1],
+            rates=[1, 1, 1, 1],
+            padding=self.padding
+        )
+        patch_shape = tf.shape(key_patches)
+        out_h, out_w = patch_shape[1], patch_shape[2]
+
+        # Reshape to (B, out_h, out_w, 4, C)
+        key_patches   = tf.reshape(key_patches, [batch_size, out_h, out_w, ksize[0]*ksize[1], channels])
+        value_patches = tf.reshape(value_patches, [batch_size, out_h, out_w, ksize[0]*ksize[1], channels])
+
+        # Compute dotted sum of values, shape: (B, out_h, out_w, C)
+        output = tf.reduce_sum(key_patches * value_patches, axis=-2)
+        return output

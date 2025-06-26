@@ -1,6 +1,7 @@
 import unittest
 import tensorflow as tf
 from tensorflow.keras import layers
+import numpy as np
 import blog_code as blog
 
 
@@ -9,12 +10,45 @@ def run_test_suite():
     unittest.TextTestRunner(verbosity=2).run(suite)
 
 
+class DataGeneration(unittest.TestCase):
+    def test_heatmap_coordinates_roundtrip(self):
+        # batch size = 3, channels = 1 -> pixels
+        images = tf.stack([
+            blog.generate_heatmap_image(10, 10),
+            blog.generate_heatmap_image(10.51, 13.2),
+            blog.generate_heatmap_image(29.74, 17.432)], axis=0)
+        coords = blog.weighted_peak_coordinates(images, system='pixels')
+        self.assertEqual(images.shape, (3, 1, 2))
+        self.assertTrue(np.allclose(coords, [[[10.0, 10.0]], [[10.51, 13.2]], [[29.74, 17.432]]]))
+
+        # batch size = 1, channels = 3 -> pixels
+        images = tf.stack([
+            blog.generate_heatmap_image(10, 10),
+            blog.generate_heatmap_image(10.51, 13.2),
+            blog.generate_heatmap_image(29.74, 17.432)], axis=-1)
+        images = tf.reshape(images, [1, 149, 149, -1])
+        coords = blog.weighted_peak_coordinates(images, system='pixels')
+        self.assertEqual(images.shape, (1, 3, 2))
+        self.assertTrue(np.allclose(coords, [[[10.0, 10.0], [10.51, 13.2], [29.74, 17.432]]]))
+
+        # batch size = 3, channels = 1 -> unit-scale
+        images = tf.stack([
+            blog.generate_heatmap_image(10, 10),
+            blog.generate_heatmap_image(10.51, 13.2),
+            blog.generate_heatmap_image(29.74, 17.432)], axis=0)
+        coords = blog.weighted_peak_coordinates(images, system='unit-scale')
+        expected = np.array([[[10.0, 10.0]], [[10.51, 13.2]], [[29.74, 17.432]]])
+        expected = (expected - 149//2) / 149
+        self.assertEqual(images.shape, (3, 1, 2))
+        self.assertTrue(np.allclose(coords, expected))
+
+
 class CustomLayers(unittest.TestCase):
     def test_HeatmapPeakCoord(self):
         # test using symbolic tensors
         input = tf.keras.Input(shape=(149, 149, 3))
         out = blog.HeatmapPeakCoord()(input)
-        print(f"symbolic output: {type(out)}, shape: {out.shape}")
+        #print(f"symbolic output: {type(out)}, shape: {out.shape}")
         self.assertEqual(out.shape, (None, 3, 2), f"Got output shape: {out.shape}")
 
         # test using real tensors
@@ -22,5 +56,39 @@ class CustomLayers(unittest.TestCase):
                           blog.generate_heatmap_image(29.74, 17.432)], axis=0)
         assert input.shape == (3, 149, 149, 1)
         out = blog.HeatmapPeakCoord()(input)
-        print(f"actual output: {type(out)}, shape: {out.shape}")
+        #print(f"actual output: {type(out)}, shape: {out.shape}")
         self.assertEqual(out.shape, (3, 1, 2), f"Got output shape: {out.shape}")
+
+    def test_CoordGrid(self):
+        input = tf.zeros(shape=(32, 16, 16, 3))
+        out = blog.CoordGrid2D()(input)
+        self.assertEqual(out.shape, (32, 16, 16, 2), f"Got output shape: {out.shape}")
+        self.assertTrue(np.allclose(out[0, 0, :, 0], np.linspace(-0.5, 0.5, 16)))
+        self.assertTrue(np.allclose(out[0, :, 0, 1], np.linspace(-0.5, 0.5, 16)))
+
+    def test_PositionwiseMaxPool2D(self):
+        # Combining coord grid with channel_mask
+        input = tf.constant([[
+            [[0.5, 0.5, 0.3], [0.1, 0.2, 0.3], [0.5, 0.3, 0.5], [0.7, 0.8, 0.9]],
+            [[0.4, 0.3, 0.5], [0.3, 0.3, 0.3], [0.4, 0.3, 0.5], [0.3, 0.3, 0.3]],
+            [[0.1, 0.2, 0.3], [0.0, 0.0, 0.3], [0.3, 0.5, 0.5], [0.6, 0.6, 0.7]],
+            [[0.2, 0.3, 0.2], [0.0, 0.0, 0.3], [0.4, 0.3, 0.5], [0.5, 0.6, 0.5]]
+        ]])
+        expected1 = tf.constant([[
+            [[0.5, 0.5, 0.3, -0.5, -0.5], [0.7, 0.8, 0.9, +0.5, -0.5]],
+            [[0.2, 0.3, 0.2, -0.5, +0.5], [0.6, 0.6, 0.7, +0.5, 1 / 6.]]
+        ]])
+        coords = blog.CoordGrid2D()(input)
+        x = layers.Concatenate()([input, coords])
+        x = blog.PositionwiseMaxPool2D(channel_weights=[1, 1, 1, 0, 0])(x)
+        self.assertTrue(np.allclose(x.numpy(), expected1.numpy()))
+
+        # Combining stride grid with channel_mask
+        expected2 = tf.constant([[
+            [[0.4, 0.3, 0.5, -0.5, +0.5], [0.7, 0.8, 0.9, +0.5, -0.5]],
+            [[0.1, 0.2, 0.3, -0.5, -0.5], [0.6, 0.6, 0.7, +0.5, -0.5]],
+        ]])
+        coords = blog.StrideGrid2D()(input)
+        x = layers.Concatenate()([input, coords])
+        x = blog.PositionwiseMaxPool2D(channel_weights=[0, 0, 1, 0, 0])(x)
+        self.assertTrue(np.allclose(x.numpy(), expected2.numpy()))
