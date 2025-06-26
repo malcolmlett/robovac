@@ -48,7 +48,6 @@ class CustomLayers(unittest.TestCase):
         # test using symbolic tensors
         input = tf.keras.Input(shape=(149, 149, 3))
         out = blog.HeatmapPeakCoord()(input)
-        #print(f"symbolic output: {type(out)}, shape: {out.shape}")
         self.assertEqual(out.shape, (None, 3, 2), f"Got output shape: {out.shape}")
 
         # test using real tensors
@@ -56,7 +55,6 @@ class CustomLayers(unittest.TestCase):
                           blog.generate_heatmap_image(29.74, 17.432)], axis=0)
         assert input.shape == (3, 149, 149, 1)
         out = blog.HeatmapPeakCoord()(input)
-        #print(f"actual output: {type(out)}, shape: {out.shape}")
         self.assertEqual(out.shape, (3, 1, 2), f"Got output shape: {out.shape}")
 
     def test_CoordGrid(self):
@@ -92,3 +90,11 @@ class CustomLayers(unittest.TestCase):
         x = layers.Concatenate()([input, coords])
         x = blog.PositionwiseMaxPool2D(channel_weights=[0, 0, 1, 0, 0])(x)
         self.assertTrue(np.allclose(x.numpy(), expected2.numpy()))
+
+    def test_AttentionPool2D(self):
+        # test using symbolic tensors
+        input = tf.keras.Input(shape=(32, 32, 3))
+        features = blog.StrideGrid2D()(input)
+        coords = blog.CoordGrid2D()(input)
+        out = blog.AttentionPool2D()(features, coords)
+        self.assertEqual(out.shape, (None, 16, 16, 2), f"Got output shape: {out.shape}")
