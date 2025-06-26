@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import IPython.display as idisplay
+import math
 import tqdm
 import cv2
 
@@ -607,7 +608,7 @@ class StridedSoftmax2D(tf.keras.layers.Layer):
 class DotPool2D(tf.keras.layers.Layer):
     """
     2D downsampling layer that combines the values between two inputs via a flattened dot-product
-    applied patch-wise and channel-wise. Wordedly differently, it applies a weighted sum,
+    applied patch-wise and channel-wise. Worded differently, it applies a weighted sum,
     where the first input provides the weights and the second input provides the values.
     However, you could equally phrase them the other way around.
 
@@ -616,7 +617,7 @@ class DotPool2D(tf.keras.layers.Layer):
 
     Output shape: (B, pooled_H, pooled_W, C).
 
-    Used in conjunction with DotPool2D() to breaks out the steps of AttentionPool2D for easier interpretability.
+    Used in conjunction with StridedSoftmax2D() to breaks out the steps of AttentionPool2D for easier interpretability.
     However, this broken-out form is limited in its flexibility. It requires that stride patches are exactly adjacent
     and non-overlapping.
     """
