@@ -18,7 +18,8 @@ class DataGeneration(unittest.TestCase):
             blog.generate_heatmap_image(10.51, 13.2),
             blog.generate_heatmap_image(29.74, 17.432)], axis=0)
         coords = blog.weighted_peak_coordinates(images, system='pixels')
-        self.assertEqual(images.shape, (3, 1, 2))
+        self.assertEqual(images.shape, (3, 149, 149, 1))
+        self.assertEqual(coords.shape, (3, 1, 2))
         self.assertTrue(np.allclose(coords, [[[10.0, 10.0]], [[10.51, 13.2]], [[29.74, 17.432]]]))
 
         # batch size = 1, channels = 3 -> pixels
@@ -28,7 +29,8 @@ class DataGeneration(unittest.TestCase):
             blog.generate_heatmap_image(29.74, 17.432)], axis=-1)
         images = tf.reshape(images, [1, 149, 149, -1])
         coords = blog.weighted_peak_coordinates(images, system='pixels')
-        self.assertEqual(images.shape, (1, 3, 2))
+        self.assertEqual(images.shape, (1, 149, 149, 3))
+        self.assertEqual(coords.shape, (1, 3, 2))
         self.assertTrue(np.allclose(coords, [[[10.0, 10.0], [10.51, 13.2], [29.74, 17.432]]]))
 
         # batch size = 3, channels = 1 -> unit-scale
@@ -39,7 +41,8 @@ class DataGeneration(unittest.TestCase):
         coords = blog.weighted_peak_coordinates(images, system='unit-scale')
         expected = np.array([[[10.0, 10.0]], [[10.51, 13.2]], [[29.74, 17.432]]])
         expected = (expected - 149//2) / 149
-        self.assertEqual(images.shape, (3, 1, 2))
+        self.assertEqual(images.shape, (3, 149, 149, 1))
+        self.assertEqual(coords.shape, (3, 1, 2))
         self.assertTrue(np.allclose(coords, expected))
 
 
