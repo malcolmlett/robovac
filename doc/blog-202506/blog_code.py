@@ -1,7 +1,158 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import IPython.display as idisplay
+import tqdm
 import cv2
+
+
+def create_dataset(n=1000, width=149, height=149):
+    """
+    Creates full dataset as tuples of (input_image, coordinate_output, heatmap_output)
+    """
+    # generate random coordinates
+    # - units: fraction of width/height, relative to centre, in range -0.5 .. +0.5
+    # - avoid 10%-width edge -> so limit to range -0.4 .. +0.4
+    # - discretize to align to pixels by converting to pixel coords and then back again
+    sizes = tf.constant([[height, width]], dtype=tf.float32)
+    corner_coords = tf.random.uniform(shape=(n, 2), minval=-0.4, maxval=+0.4)  # float in range -0.4 .. +0.4
+    corner_coords = tf.cast(tf.round(corner_coords * sizes + sizes // 2), tf.int32)  # int in range 14 .. 134
+    corner_coords = (tf.cast(corner_coords,
+                             tf.float32) - sizes // 2) / sizes  # float in approx. range -0.4 .. +0.4, but discretized
+
+    images = []
+    heatmaps = []
+    for corner_coord in tqdm.tqdm(corner_coords):
+        abs_coord = np.array(corner_coord * 149 + 149 // 2, dtype=np.int32)
+        image = generate_training_image(abs_coord[0], abs_coord[1])
+        heatmap = generate_heatmap_image(abs_coord[0], abs_coord[1])
+        images.append(tf.constant(image, tf.float32))
+        heatmaps.append(tf.constant(heatmap, tf.float32))
+    dataset = tf.data.Dataset.from_tensor_slices((images, corner_coords, heatmaps))
+    return dataset
+
+
+def to_input_dataset(image, coord, heatmap):
+    """
+    Maps a dataset row to a single input_image.
+    Usage: dataset.map(to_coordinate_dataset)
+    """
+    return image
+
+
+def to_coordinate_dataset(image, coord, heatmap):
+    """
+    Maps a dataset row to a tuple of (input_image, coordinate_output).
+    Usage: dataset.map(to_coordinate_dataset)
+    """
+    return (image, coord)
+
+
+def to_heatmap_dataset(image, coord, heatmap):
+    """
+    Maps a dataset row to a tuple of (input_image, heatmap_output).
+    Usage: dataset.map(to_heatmap_dataset)
+    """
+    return (image, heatmap)
+
+
+def _plot_dataset_entry(image, corner_coords):
+    abs_coords = corner_coords * 149 + 149 // 2
+    plt.imshow(image, cmap='gray')
+    plt.scatter(abs_coords[0], abs_coords[1], s=100, edgecolors='b', facecolors='none', linewidth=2)
+    plt.axis('off')
+
+
+def _plotadd_pred_coord(pred_coords):
+    edge_x = -0.5 if pred_coords[0] < -0.5 else +0.5 if pred_coords[0] > 0.5 else None
+    edge_y = -0.5 if pred_coords[1] < -0.5 else +0.5 if pred_coords[1] > 0.5 else None
+
+    if edge_x is not None or edge_y is not None:
+        if edge_x is not None:
+            edge_x = edge_x * 149 + 149 // 2
+            plt.plot([edge_x, edge_x], [0, 148], color='r', linewidth=2)
+        if edge_y is not None:
+            edge_y = edge_y * 149 + 149 // 2
+            plt.plot([0, 148], [edge_y, edge_y], color='r', linewidth=2)
+    else:
+        abs_coords = pred_coords * 149 + 149 // 2
+        plt.scatter(abs_coords[0], abs_coords[1], s=80, edgecolors='r', facecolors='none', linewidth=2)
+    plt.plot(0, 0, 149, 149, color='r', linewidth=2)
+
+
+def plot_dataset(dataset, model=None, n=10, show_heatmap=False):
+    """
+    Plot dataset with/without model predictions, and with/without heatmaps.
+    If model is omitted, then any shown heatmap and prediction marker (red) are indicative
+    of the ground-truth heatmap. Otherwise they are derived from the model output.
+
+    Blue circles show ground-truth coordinates.
+    Red circles show predicted coordinates.
+    Perfect alignment can be seen by the (slightly smaller) red circles sitting
+    perfectly ringed by the blue circle.
+
+    Args:
+     - dataset: original full dataset
+    """
+    if show_heatmap:
+        cols = min(6, n)
+        rows = math.ceil((n * 2) / cols)
+        plt.figure(figsize=(12, rows * 2), layout='constrained')
+    else:
+        cols = min(5, n)
+        rows = math.ceil(n / cols)
+        plt.figure(figsize=(10, rows * 2.5), layout='constrained')
+    taken = dataset.take(n)
+
+    if model is not None:
+        predicted = model.predict(taken.map(to_input_dataset).batch(n))
+        if predicted.shape[1:] != (2,):
+            predicted_coords = weighted_peak_coordinates(predicted)
+            predicted_coords = predicted_coords[:, 0, :]  # remove superfluous C dimension
+        else:
+            predicted_coords = predicted
+
+        j = 0
+        for i, (image, corner_coords, heatmap) in enumerate(taken):
+            j += 1
+            # if output.shape == (2,):
+            #  corner_coords = output
+            # else:
+            #  corner_coords = weighted_peak_coordinates(tf.expand_dims(output, axis=0))
+            #  corner_coords = corner_coords[0, 0, :]
+            pred_coords = predicted_coords[i, ...]
+
+            plt.subplot(rows, cols, j)
+            _plot_dataset_entry(image, corner_coords)
+            _plotadd_pred_coord(pred_coords)
+
+            has_heatmap = (predicted[i, ...].shape != (2,))
+            if has_heatmap and show_heatmap:
+                j += 1
+                plt.subplot(rows, cols, j)
+                plt.imshow(predicted[i], cmap='gray')
+                plt.axis('off')
+
+    else:
+        j = 0
+        for i, (image, corner_coords, heatmap) in enumerate(taken):
+            j += 1
+            plt.subplot(rows, cols, j)
+            plt.title(f"({corner_coords[0]:.3f},{corner_coords[1]:.3f})")
+            _plot_dataset_entry(image, corner_coords)
+
+            if show_heatmap:
+                j += 1
+                pred_coords = weighted_peak_coordinates(tf.expand_dims(heatmap, axis=0))
+                pred_coords = pred_coords[0, 0, :]
+
+                plt.subplot(rows, cols, j)
+                plt.title("GT heatmap")
+                _plot_dataset_entry(heatmap, corner_coords)
+                _plotadd_pred_coord(pred_coords)
+    plt.show()
 
 
 def generate_training_image(x, y, width=149, height=149):
