@@ -662,3 +662,184 @@ class DotPool2D(tf.keras.layers.Layer):
         # Compute dotted sum of values, shape: (B, out_h, out_w, C)
         output = tf.reduce_sum(key_patches * value_patches, axis=-2)
         return output
+
+
+class MeanCoordError(tf.keras.metrics.Metric):
+    """
+    Computes the distance between true and predicted coordinates, in pixels, possibly after conversion
+    from whatever output representation the model uses (eg: heatmap).
+    """
+
+    def __init__(self, encoding, name="mce", system='unit-scale', width=149, height=149, **kwargs):
+        """
+        Args:
+          encoding = one of:
+            "xy" - model outputs (B,2) of (x,y) coordinates in range +/- 0.5 as fraction of image width/height.
+            "heatmap-peak" - model outputs (B,H,W,1) of heatmap, where 3x3 grid surrounding peak is used as weighted mean of pixel coordinates
+          system - 'unit-scale' or 'pixels'.
+            The models are dataset assume a 'unit-scale' where the coordinates are given
+            as a fraction of the image width/height, relative to the image centre
+            and each have the range -0.5 .. +0.5.
+
+            The alternative is the original pixel coordinates, with floating-point precision.
+          width - assumed image width when using 'xy' encoding and pixel system
+          height - assumed image width when using 'xy' encoding and pixel system
+        """
+        super().__init__(name=name, **kwargs)
+        self.encoding = encoding
+        self.total = self.add_weight(name="total", initializer="zeros")
+        self.count = self.add_weight(name="count", initializer="zeros")
+        self.system = system
+        self.width = width
+        self.height = height
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        # get true and pred coords in desired coordinate system
+        if self.encoding == "xy":
+            coord_true = y_true  # (B, 2)
+            coord_pred = y_pred  # (B, 2)
+            # convert to pixels if needed
+            if self.system == 'pixels':
+                coord_true = coord_true * self.width + self.width // 2  # (B, 2)
+                coord_pred = coord_pred * self.height + self.height // 2  # (B, 2)
+        elif self.encoding == "heatmap-peak":
+            coord_true = weighted_peak_coordinates(y_true, system=self.system)  # (B, 2)
+            coord_pred = weighted_peak_coordinates(y_pred, system=self.system)  # (B, 2)
+        else:
+            raise ValueError(f"Unrecognised output encoding: {self.encoding}")
+
+        # calculate distances
+        coord_errors = tf.square(coord_true - coord_pred)  # (B,2)
+        coord_errors = tf.sqrt(tf.reduce_sum(coord_errors, axis=-1))  # (B,)
+
+        self.total.assign_add(tf.reduce_sum(coord_errors))
+        self.count.assign_add(tf.cast(tf.size(coord_errors), tf.float32))
+
+    def result(self):
+        return self.total / self.count
+
+    def reset_states(self):
+        self.total.assign(0.0)
+        self.count.assign(0.0)
+
+
+class _PeakWeightedLoss(tf.keras.losses.Loss):
+    """
+    Proto-loss class to be a part of a larger loss class via composition.
+
+    Computes loss only near a peak (target or predicted). Applies a gaussian distributed weighting
+    to all pixels, but tightly focused on the target peak.
+    """
+
+    def __init__(self, peak_source, sigma=2.0, disc_radius=None, debug=False):
+        # Default disc radius found through trial and error to work for small and large sigmas.
+        # With sigma=2.0, this pulls in just a little more than the 3x3 grid at flat weighting.
+        super().__init__()
+        if peak_source not in ['y_true', 'y_pred']:
+            raise ValueError(f"Invalid peak_source: {peak_source}")
+        self.peak_source = peak_source
+        self.sigma = sigma
+        self.disc_radius = tf.sqrt(sigma) * 1.5 if disc_radius is None else disc_radius
+        self.debug = debug
+
+    def call(self, y_true, y_pred):
+        """
+        Args:
+          y_true/y_pred - (B, H, W, C)
+        Returns:
+          (B,) - loss for each sample in batch
+        """
+        B, H, W, C = tf.unstack(tf.shape(y_true))
+
+        # identify peak coordinates from source
+        peak_source = y_true if self.peak_source == "y_true" else y_pred
+        x_peaks = tf.reduce_max(peak_source, axis=1)  # (B, W, C)
+        x_peaks = tf.argmax(x_peaks, axis=1, output_type=tf.int32)  # (B, C)
+        y_peaks = tf.reduce_max(peak_source, axis=2)  # (B, H, C)
+        y_peaks = tf.argmax(y_peaks, axis=1, output_type=tf.int32)  # (B, C)
+        x_peaks = tf.reshape(x_peaks, [B, 1, 1, C])  # (B, 1, 1, C)
+        y_peaks = tf.reshape(y_peaks, [B, 1, 1, C])  # (B, 1, 1, C)
+
+        # populate coordinate grid
+        grid_x, grid_y = tf.meshgrid(tf.range(W), tf.range(H))  # (H, W)
+        grid_x = tf.tile(tf.reshape(grid_x, [1, H, W, 1]), [B, 1, 1, C])  # (B, H, W, C)
+        grid_y = tf.tile(tf.reshape(grid_y, [1, H, W, 1]), [B, 1, 1, C])  # (B, H, W, C)
+
+        # compute square-distance grid
+        dist_x = grid_x - x_peaks
+        dist_y = grid_y - y_peaks
+        dist2 = tf.cast(dist_x ** 2 + dist_y ** 2, tf.float32)  # (B, H, W, C)
+
+        # compute weights
+        #  - compute as gaussian of square-dist
+        #  - then push gaussian up so that it's 1.0 @ disc_radius, and clipped in the middle to 1.0
+        #  - total: max between them, then normalized as weights
+        #  - this ensures that the existing gaussian shape of the 3x3 patch in y_true is given 100% equal weights across,
+        #    but that there's also a little bubble around it pushing those values towards zero, while retaining
+        #    smooth transitions.
+        weights = tf.exp(-dist2 / (2 * self.sigma ** 2))  # (B, H, W, C) in range 0.0 .. 1.0
+        edge = tf.exp(-self.disc_radius ** 2 / (2 * self.sigma ** 2))
+        weights = tf.clip_by_value(weights / edge, 0.0, 1.0)
+        scale = tf.reduce_sum(weights, axis=[1, 2], keepdims=True)  # (B, 1, 1, C)
+        weights = weights / scale  # (B, H, W, C) normalised to sum to 1.0 for each (B, C)
+
+        # DEBUG MODE - plot and log workings
+        if self.debug:
+            print(f"dist2: {dist2.shape} - {np.min(dist2)}..{np.max(dist2)}, weights: {weights.shape}")
+            plt.figure(figsize=(10, 2), layout='constrained')
+            plt.subplot(1, 4, 1)
+            plt.imshow(tf.abs(dist_x[0]))
+            plt.subplot(1, 4, 2)
+            plt.imshow(tf.abs(dist_y[0]))
+            plt.subplot(1, 4, 3)
+            plt.imshow(dist2[0])
+            plt.subplot(1, 4, 4)
+            plt.imshow(weights[0])
+
+        # calculate weighted MSE loss
+        # - note: weights already normalised to computed weighted mean, so use sum to calculate mean
+        error = tf.square(y_true - y_pred)  # (B, H, W, C)
+        loss = tf.reduce_sum(error * weights, axis=[1, 2, 3])  # (B,)
+        return loss
+
+
+class HeatmapPeakCoordLoss(tf.keras.losses.Loss):
+    """
+    Loss calculated through three weighted components:
+    - global MSE
+    - MSE of area near true peak
+    - MSE of area near predicted peak
+    """
+
+    def __init__(self, name="hpc_loss", component_weights=None, sigma=2.0, disc_radius=None):
+        """
+        Args:
+          component_weights - 3-array of weights of the three loss components (will be normalized to sum to 1.0)
+        """
+        # Default disc radius found through trial and error to work for small and large sigmas.
+        # With sigma=2.0, this pulls in just a little more than the 3x3 grid at flat weighting.
+        super().__init__(name=name)
+        if component_weights is not None and np.shape(component_weights) != (3,):
+            raise ValueError(f"Wrong shape for component_weights: {component_weights}")
+        if component_weights is None:
+            component_weights = [1.0, 1.0, 1.0]
+        component_weights = tf.constant(component_weights, dtype=tf.float32)
+        self.component_weights = component_weights / tf.reduce_sum(component_weights)
+
+        self.true_peak_losser = _PeakWeightedLoss("y_true", sigma=sigma, disc_radius=disc_radius)
+        self.pred_peak_losser = _PeakWeightedLoss("y_pred", sigma=sigma, disc_radius=disc_radius)
+
+    def call(self, y_true, y_pred):
+        """
+        Args:
+          y_true/y_pred - (B, H, W, C)
+        Returns:
+          (B,) - loss for each sample in batch
+        """
+        image_wide_loss = tf.reduce_mean(tf.square(y_true - y_pred), axis=[1, 2, 3])  # (B,)
+        true_peak_loss = self.true_peak_losser(y_true, y_pred)
+        pred_peak_loss = self.pred_peak_losser(y_true, y_pred)
+
+        return self.component_weights[0] * image_wide_loss + \
+            self.component_weights[1] * true_peak_loss + \
+            self.component_weights[2] * pred_peak_loss
