@@ -1,6 +1,100 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 import numpy as np
+import cv2
+
+
+def generate_training_image(x, y, width=149, height=149):
+    """
+    Generates the input image for training and validation.
+    Note: only works for integer (x,y) because OpenCV.line() doesn't support sub-pixel resolution.
+    """
+    img = np.zeros((height, width), dtype=np.uint8)
+
+    # Add speckled noise
+    noise_density = 0.1  # Adjust for more/less speckles
+    num_noise_pixels = int(noise_density * img.size)
+    xs = np.random.randint(0, width, num_noise_pixels)
+    ys = np.random.randint(0, height, num_noise_pixels)
+    img[ys, xs] = 255
+
+    # Draw vertical line (down from (x, y))
+    cv2.line(img, (x, y), (x, height - 1), 255, thickness=3)
+
+    # Draw horizontal line (right from (x, y))
+    cv2.line(img, (x, y), (width - 1, y), 255, thickness=3)
+
+    # Rescale value to 0.0 .. 1.0
+    # Add channel dimension for grayscale
+    return img[..., np.newaxis] / 255.0
+
+
+def generate_soft_3x3(x_fp, y_fp, coordinate_radius=1.0):
+    """
+    Used to construct the ground-truth heatmap for a given coordinate.
+    This function computes just the 3x3 grid surrounding the given coordinate,
+    with values such that its weighted sum of coordinates resolves as the requested
+    coordinate (with sub-pixel precision and accuracy).
+
+    Generate a normalized 3x3 kernel centered around (x_fp, y_fp), relative to pixel centers.
+    The output weights sum to 1.
+
+    Computes weights as the percentage coverage by a partially enlarged square pixel placed
+    exactly onto the floating-point-precision coordinate.
+    Experiments found that this approach produces the most accurate results compared to some approaches.
+    See https://github.com/malcolmlett/robovac/blob/main/experiments-slam/Experiment_ADLO_3a_SpatialAccuracy.ipynb for other experiments.
+
+    Note: assumes that pixel integer coordinates are located at the pixel centres.
+    This is consistent with OpenCV and matplotlib.
+
+    Args:
+      coordinate_radius - must be in range 0.0..1.0, where 0.5 = normal pixel size.
+        Works best with 1.0.
+    """
+    def row_coverage(fp):
+        row = np.array([-1, 0, +1])
+        overlap_left = np.maximum(row - 0.5, fp - coordinate_radius)
+        overlap_right = np.minimum(row + 0.5, fp + coordinate_radius)
+        overlap = np.clip(overlap_right - overlap_left, 0.0, 1.0)
+        return overlap
+
+    # Convert (x_fp, y_fp) to grid coordinate system
+    # - assumes grid is placed such that (x_fp,y_fp) is within bounds of central pixel (ie: in range -0.5..+0.5)
+    x_fp = x_fp - round(x_fp)
+    y_fp = y_fp - round(y_fp)
+
+    # Compute weights
+    # - doing x and y axis separately, and then combining into a grid
+    dx = row_coverage(x_fp)
+    dy = row_coverage(y_fp)
+    weights = np.matmul(dy[:, np.newaxis], dx[np.newaxis, :])
+
+    # Normalize weights and return
+    weights /= np.sum(weights)
+    return weights  # shape (3, 3)
+
+
+def generate_heatmap_image(x, y, width=149, height=149):
+    """
+    Generates a heatmap that is mostly zeros, with a 3x3 spot at the target
+    coordinate that identifies its exact location to sub-pixel resolution.
+    The weighted sum of the coordinates of the non-zero positions,
+    weighted by the heatmap magnitudes, will result in exactly the original coordinate.
+    """
+    img = np.zeros((height, width), dtype=np.float32)
+    weights = generate_soft_3x3(x, y)
+
+    xc = int(np.round(x))
+    yc = int(np.round(y))
+
+    for dy in range(-1, 2):
+        for dx in range(-1, 2):
+            xi = xc + dx
+            yi = yc + dy
+            if 0 <= xi < width and 0 <= yi < height:
+                img[yi, xi] = weights[dy + 1, dx + 1]
+
+    return img[..., np.newaxis]
 
 
 def weighted_peak_coordinates(pred, system='unit-scale'):
