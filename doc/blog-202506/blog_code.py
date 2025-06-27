@@ -10,6 +10,7 @@ import math
 import tqdm
 import cv2
 import time
+import re
 from tensorflow.python.profiler.model_analyzer import profile
 from tensorflow.python.profiler.option_builder import ProfileOptionBuilder
 import train_instrumentation as tinstr
