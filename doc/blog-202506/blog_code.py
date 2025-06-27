@@ -161,6 +161,73 @@ def plot_dataset(dataset, model=None, n=10, show_heatmap=False):
     plt.show()
 
 
+def quick_show_preds(model, dataset, width=149, height=149):
+    """
+    Shows a summary of the model against a dataset.
+    Args:
+        - model - trained or untrained model
+        - dataset - raw dataset (without batching)
+        - width - used for conversion between units
+        - height - used for conversion between units
+    """
+    # gather true and predicted coordinates in both unit-scale and pixels
+    dataset_pred_coords = []
+    dataset_true_coords_px = []
+    dataset_pred_coords_px = []
+    sizes = np.array([[height, width]])
+    for (input_images, true_coords, _) in tqdm.tqdm(dataset.batch(32)):
+        y_preds = model(input_images)
+        if len(y_preds.shape) == 4:
+            # (B, H, W, C)
+            coord_preds = blog.weighted_peak_coordinates(y_preds, system='unit-scale')  # (B, 2)
+            coord_preds_px = blog.weighted_peak_coordinates(y_preds, system='pixels')  # (B, 2)
+        elif len(y_preds.shape) == 2:
+            # (B, 2)
+            coord_preds = y_preds
+            coord_preds_px = y_preds * sizes + sizes // 2
+        else:
+            raise ValueError(f"Unrecognised y_pred shape: {y_preds.shape}")
+
+        dataset_pred_coords.extend(coord_preds)
+        dataset_pred_coords_px.extend(coord_preds_px)
+        dataset_true_coords_px.extend(true_coords * sizes + sizes // 2)
+    dataset_pred_coords = np.array(dataset_pred_coords)
+    dataset_pred_coords_px = np.array(dataset_pred_coords_px)
+    dataset_true_coords_px = np.array(dataset_true_coords_px)
+
+    # compute error distances (in pixels)
+    coord_errors_px = np.square(dataset_pred_coords_px - dataset_true_coords_px)  # (D,2)
+    coord_errors_px = np.sqrt(tf.reduce_sum(coord_errors_px, axis=-1))  # (D,)
+
+    print(f"pred.x: {np.min(dataset_pred_coords[:, 0])}..{np.max(dataset_pred_coords[:, 0])}")
+    print(f"pred.y: {np.min(dataset_pred_coords[:, 1])}..{np.max(dataset_pred_coords[:, 1])}")
+
+    plt.figure(figsize=(10, 2), layout='constrained')
+
+    plt.subplot(1, 3, 1)
+    plt.title("coord distance error")
+    plt.hist(coord_errors_px, bins=20)
+    plt.xlabel('pixels')
+    plt.ylabel('histogram')
+    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
+
+    plt.subplot(1, 3, 2)
+    plt.title("pred.x")
+    plt.hist(dataset_pred_coords[:, 0], bins=20)
+    plt.xlabel('raw')
+    plt.ylabel('histogram')
+    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
+
+    plt.subplot(1, 3, 3)
+    plt.title("pred.y")
+    plt.hist(dataset_pred_coords[:, 1], bins=20)
+    plt.xlabel('raw')
+    plt.ylabel('histogram')
+    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
+
+    plt.show()
+
+
 def generate_training_image(x, y, width=149, height=149):
     """
     Generates the input image for training and validation.
@@ -695,8 +762,7 @@ class MeanCoordError(tf.keras.metrics.Metric):
         self.total = self.add_weight(name="total", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
         self.system = system
-        self.width = width
-        self.height = height
+        self.sizes = tf.constant([[height, width]])
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         # get true and pred coords in desired coordinate system
@@ -705,8 +771,8 @@ class MeanCoordError(tf.keras.metrics.Metric):
             coord_pred = y_pred  # (B, 2)
             # convert to pixels if needed
             if self.system == 'pixels':
-                coord_true = coord_true * self.width + self.width // 2  # (B, 2)
-                coord_pred = coord_pred * self.height + self.height // 2  # (B, 2)
+                coord_true = coord_true * self.sizes + self.sizes // 2  # (B, 2)
+                coord_pred = coord_pred * self.sizes + self.sizes // 2  # (B, 2)
         elif self.encoding == "heatmap-peak":
             coord_true = weighted_peak_coordinates(y_true, system=self.system)  # (B, 2)
             coord_pred = weighted_peak_coordinates(y_pred, system=self.system)  # (B, 2)
