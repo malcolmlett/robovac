@@ -346,8 +346,8 @@ def quick_show_preds(model, dataset, width=149, height=149):
         y_preds = model(input_images)
         if len(y_preds.shape) == 4:
             # (B, H, W, C)
-            coord_preds = blog.weighted_peak_coordinates(y_preds, system='unit-scale')  # (B, 2)
-            coord_preds_px = blog.weighted_peak_coordinates(y_preds, system='pixels')  # (B, 2)
+            coord_preds = weighted_peak_coordinates(y_preds, system='unit-scale')  # (B, 2)
+            coord_preds_px = weighted_peak_coordinates(y_preds, system='pixels')  # (B, 2)
         elif len(y_preds.shape) == 2:
             # (B, 2)
             coord_preds = y_preds
