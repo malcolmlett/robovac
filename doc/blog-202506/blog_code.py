@@ -12,6 +12,7 @@ import cv2
 import time
 from tensorflow.python.profiler.model_analyzer import profile
 from tensorflow.python.profiler.option_builder import ProfileOptionBuilder
+import train_instrumentation as tinstr
 
 
 def create_dataset(n=1000, width=149, height=149):
@@ -158,73 +159,6 @@ def plot_dataset(dataset, model=None, n=10, show_heatmap=False):
                 plt.title("GT heatmap")
                 _plot_dataset_entry(heatmap, corner_coords)
                 _plotadd_pred_coord(pred_coords)
-    plt.show()
-
-
-def quick_show_preds(model, dataset, width=149, height=149):
-    """
-    Shows a summary of the model against a dataset.
-    Args:
-        - model - trained or untrained model
-        - dataset - raw dataset (without batching)
-        - width - used for conversion between units
-        - height - used for conversion between units
-    """
-    # gather true and predicted coordinates in both unit-scale and pixels
-    dataset_pred_coords = []
-    dataset_true_coords_px = []
-    dataset_pred_coords_px = []
-    sizes = np.array([[height, width]])
-    for (input_images, true_coords, _) in tqdm.tqdm(dataset.batch(32)):
-        y_preds = model(input_images)
-        if len(y_preds.shape) == 4:
-            # (B, H, W, C)
-            coord_preds = blog.weighted_peak_coordinates(y_preds, system='unit-scale')  # (B, 2)
-            coord_preds_px = blog.weighted_peak_coordinates(y_preds, system='pixels')  # (B, 2)
-        elif len(y_preds.shape) == 2:
-            # (B, 2)
-            coord_preds = y_preds
-            coord_preds_px = y_preds * sizes + sizes // 2
-        else:
-            raise ValueError(f"Unrecognised y_pred shape: {y_preds.shape}")
-
-        dataset_pred_coords.extend(coord_preds)
-        dataset_pred_coords_px.extend(coord_preds_px)
-        dataset_true_coords_px.extend(true_coords * sizes + sizes // 2)
-    dataset_pred_coords = np.array(dataset_pred_coords)
-    dataset_pred_coords_px = np.array(dataset_pred_coords_px)
-    dataset_true_coords_px = np.array(dataset_true_coords_px)
-
-    # compute error distances (in pixels)
-    coord_errors_px = np.square(dataset_pred_coords_px - dataset_true_coords_px)  # (D,2)
-    coord_errors_px = np.sqrt(tf.reduce_sum(coord_errors_px, axis=-1))  # (D,)
-
-    print(f"pred.x: {np.min(dataset_pred_coords[:, 0])}..{np.max(dataset_pred_coords[:, 0])}")
-    print(f"pred.y: {np.min(dataset_pred_coords[:, 1])}..{np.max(dataset_pred_coords[:, 1])}")
-
-    plt.figure(figsize=(10, 2), layout='constrained')
-
-    plt.subplot(1, 3, 1)
-    plt.title("coord distance error")
-    plt.hist(coord_errors_px, bins=20)
-    plt.xlabel('pixels')
-    plt.ylabel('histogram')
-    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
-
-    plt.subplot(1, 3, 2)
-    plt.title("pred.x")
-    plt.hist(dataset_pred_coords[:, 0], bins=20)
-    plt.xlabel('raw')
-    plt.ylabel('histogram')
-    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
-
-    plt.subplot(1, 3, 3)
-    plt.title("pred.y")
-    plt.hist(dataset_pred_coords[:, 1], bins=20)
-    plt.xlabel('raw')
-    plt.ylabel('histogram')
-    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
-
     plt.show()
 
 
@@ -391,6 +325,194 @@ def weighted_peak_coordinates(pred, system='unit-scale'):
         return coords
     else:
         raise ValueError(f"Invalid coordinate system: {system}")
+
+
+def quick_show_preds(model, dataset, width=149, height=149):
+    """
+    Shows a summary of the model against a dataset.
+    Args:
+        - model - trained or untrained model
+        - dataset - raw dataset (without batching)
+        - width - used for conversion between units
+        - height - used for conversion between units
+    """
+    # gather true and predicted coordinates in both unit-scale and pixels
+    dataset_pred_coords = []
+    dataset_true_coords_px = []
+    dataset_pred_coords_px = []
+    sizes = np.array([[height, width]])
+    for (input_images, true_coords, _) in tqdm.tqdm(dataset.batch(32)):
+        y_preds = model(input_images)
+        if len(y_preds.shape) == 4:
+            # (B, H, W, C)
+            coord_preds = blog.weighted_peak_coordinates(y_preds, system='unit-scale')  # (B, 2)
+            coord_preds_px = blog.weighted_peak_coordinates(y_preds, system='pixels')  # (B, 2)
+        elif len(y_preds.shape) == 2:
+            # (B, 2)
+            coord_preds = y_preds
+            coord_preds_px = y_preds * sizes + sizes // 2
+        else:
+            raise ValueError(f"Unrecognised y_pred shape: {y_preds.shape}")
+
+        dataset_pred_coords.extend(coord_preds)
+        dataset_pred_coords_px.extend(coord_preds_px)
+        dataset_true_coords_px.extend(true_coords * sizes + sizes // 2)
+    dataset_pred_coords = np.array(dataset_pred_coords)
+    dataset_pred_coords_px = np.array(dataset_pred_coords_px)
+    dataset_true_coords_px = np.array(dataset_true_coords_px)
+
+    # compute error distances (in pixels)
+    coord_errors_px = np.square(dataset_pred_coords_px - dataset_true_coords_px)  # (D,2)
+    coord_errors_px = np.sqrt(tf.reduce_sum(coord_errors_px, axis=-1))  # (D,)
+
+    print(f"pred.x: {np.min(dataset_pred_coords[:, 0])}..{np.max(dataset_pred_coords[:, 0])}")
+    print(f"pred.y: {np.min(dataset_pred_coords[:, 1])}..{np.max(dataset_pred_coords[:, 1])}")
+
+    plt.figure(figsize=(10, 2), layout='constrained')
+
+    plt.subplot(1, 3, 1)
+    plt.title("coord distance error")
+    plt.hist(coord_errors_px, bins=20)
+    plt.xlabel('pixels')
+    plt.ylabel('histogram')
+    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
+
+    plt.subplot(1, 3, 2)
+    plt.title("pred.x")
+    plt.hist(dataset_pred_coords[:, 0], bins=20)
+    plt.xlabel('raw')
+    plt.ylabel('histogram')
+    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
+
+    plt.subplot(1, 3, 3)
+    plt.title("pred.y")
+    plt.hist(dataset_pred_coords[:, 1], bins=20)
+    plt.xlabel('raw')
+    plt.ylabel('histogram')
+    plt.gca().tick_params(axis='y', which='both', length=0, labelleft=False)
+
+    plt.show()
+
+
+def get_layer_outputs(model, dataset, num=1, return_input=False):
+    """
+    Invokes the model once with a small set of data and obtain the raw outputs from each layer.
+    Returns:
+      model_output, [layer_outputs]
+    """
+
+    # prepare model
+    monitoring_model = tf.keras.Model(
+        inputs=tinstr._original_inputs(model),
+        outputs=[model.outputs] + [layer.output for layer in model.layers])
+
+    # do prediction
+    dataset = dataset.take(num).batch(num)
+    model_input = next(iter(dataset))[0]
+    out = monitoring_model(model_input)
+    model_output = out[0][0]
+    layer_outputs = out[1:]  # includes last layer, which is usually equivalent to the model output
+
+    if return_input:
+        return model_input, model_output, layer_outputs
+    else:
+        return model_output, layer_outputs
+
+
+def plot_layers(model, dataset, layer_filter, coord_layer_filter=None, coord_channels=None, num=1):
+    """
+    Plots images representing outputs from feature layers, and optionally from associated coordinate channels
+    or layers.
+    Args:
+      coord_channels - number of channels in main selected layers that are treated as coordinates and displayed separately
+      coord_layer_filter - separate filter for layers that hold coordinates
+    """
+    def index_layers_by_name_pattern(model, name_pattern):
+        return [l_idx for l_idx, layer in enumerate(model.layers) if re.fullmatch(name_pattern, layer.name)]
+
+    def coords_to_rgb(coord_grid):
+        # assumes two channels for coordinates, but will produce results even if there's more
+        coord_grid = coord_grid + 0.5
+        blue = 1.0 - tf.sqrt(tf.reduce_sum(tf.square(coord_grid), axis=-1))
+        blue = tf.clip_by_value(blue, 0.0, 1.0)  # gives a stronger distinction than RMS or simple mean
+        return tf.stack([coord_grid[..., 0], coord_grid[..., 1], blue], axis=-1)
+
+    def flatten_channels(tensor, reduction='pos-norm'):
+        if reduction == 'norm':
+            return tf.sqrt(tf.reduce_mean(tf.square(tensor), axis=-1))
+        elif reduction == 'pos-norm':
+            tensor = tf.clip_by_value(tensor, 0.0, float('inf'))
+            return tf.sqrt(tf.reduce_mean(tf.square(tensor), axis=-1))
+        else:
+            raise ValueError(f"Invalid reduction: {reduction}")
+
+    layer_indices = index_layers_by_name_pattern(model, layer_filter)
+    coord_layer_indices = None if coord_layer_filter is None else index_layers_by_name_pattern(model, coord_layer_filter)
+    has_coords = (coord_channels is not None and coord_channels > 0) or (coord_layer_indices is not None)
+
+    # do prediction
+    model_input, model_output, layer_outputs = get_layer_outputs(model, dataset, num=num, return_input=True)
+    print(f"model input:     {model_input.shape}")
+    print(f"model output:    {model_output.shape}")
+    print(f"all layers:      {[t.shape for t in layer_outputs]}")
+    print(f"filtered layers: {[layer_outputs[l_idx].shape for l_idx in layer_indices]}")
+    if coord_layer_indices is not None:
+        print(f"coord layers:    {[layer_outputs[l_idx].shape for l_idx in coord_layer_indices]}")
+
+    if coord_layer_indices is not None:
+        cols = 1 + max(len(layer_indices), len(coord_layer_indices))
+    else:
+        cols = 1 + len(layer_indices)
+    rows = num * 2 if has_coords else num
+
+    plt.figure(figsize=(15, 2 * rows), layout='constrained')
+
+    for idx in range(num):
+        row = idx * 2 if has_coords else idx
+        col = 0
+        plt.subplot(rows, cols, 1 + (row * cols) + col)
+        plt.title(f"input (data #{idx})")
+        plt.imshow(model_input[idx, :, :, 0])
+        plt.axis('off')
+
+        # feature layers
+        for l_idx in layer_indices:
+            layer = model.layers[l_idx]
+            layer_data = layer_outputs[l_idx]
+            if coord_channels is not None:
+                # drop coord_channels from main feature layer
+                layer_data = layer_data[..., :-coord_channels]
+            col += 1
+            plt.subplot(rows, cols, 1 + (row * cols) + col)
+            plt.title(f"{layer.name}")
+            plt.imshow(flatten_channels(layer_data[idx]))
+            plt.axis('off')
+
+        # coordinate channels or layers
+        if has_coords:
+            row = idx * 2 + 1
+            col = 0
+
+            # coordinate channel
+            if coord_channels is not None and coord_channels > 0:
+                for l_idx in layer_indices:
+                    layer = model.layers[l_idx]
+                    layer_data = layer_outputs[l_idx]
+                    col += 1
+                    plt.subplot(rows, cols, 1 + (row * cols) + col)
+                    plt.imshow(coords_to_rgb(layer_data[idx, :, :, -coord_channels:]))
+                    plt.axis('off')
+
+            # coordinate layers
+            else:
+                for l_idx in coord_layer_indices:
+                    layer = model.layers[l_idx]
+                    layer_data = layer_outputs[l_idx]
+                    col += 1
+                    plt.subplot(rows, cols, 1 + (row * cols) + col)
+                    plt.title(f"{layer.name}")
+                    plt.imshow(coords_to_rgb(layer_data[idx]))
+                    plt.axis('off')
 
 
 class HeatmapPeakCoord(layers.Layer):
