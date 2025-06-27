@@ -762,7 +762,7 @@ class MeanCoordError(tf.keras.metrics.Metric):
         self.total = self.add_weight(name="total", initializer="zeros")
         self.count = self.add_weight(name="count", initializer="zeros")
         self.system = system
-        self.sizes = tf.constant([[height, width]])
+        self.sizes = tf.constant([[height, width]], dtype=tf.float32)
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         # get true and pred coords in desired coordinate system
