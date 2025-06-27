@@ -4,11 +4,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.ticker import LogLocator
 import IPython.display as idisplay
 import math
 import tqdm
 import cv2
 import time
+from tensorflow.python.profiler.model_analyzer import profile
+from tensorflow.python.profiler.option_builder import ProfileOptionBuilder
 
 
 def create_dataset(n=1000, width=149, height=149):
@@ -847,6 +850,24 @@ class HeatmapPeakCoordLoss(tf.keras.losses.Loss):
             self.component_weights[2] * pred_peak_loss
 
 
+def get_flops(model):
+    """
+    Uses TensorFlow profile to compute the FLOPS of a model.
+
+    Internally this uses a TensorFlow v1 API and issues a warning.
+    Ideally we'd use keras-flops, but there's an outstanding issue that prevents it
+    from working: https://github.com/tokusumi/keras-flops/issues/17.
+    Args:
+        model - must have a defined input shape
+    Returns:
+        number of FLOPS
+    """
+    forward_pass = tf.function(model.call, input_signature=[tf.TensorSpec(shape=(1,) + model.input_shape[1:])])
+    graph_info = profile(forward_pass.get_concrete_function().graph, options=ProfileOptionBuilder.float_operation())
+    flops = graph_info.total_float_ops
+    return flops
+
+
 class TrialHistory:
     """
     Properties:
@@ -857,11 +878,15 @@ class TrialHistory:
             sd_{metric-name}" - array of std. dev. of 'metric-name' results, at best epoch for each trial,
               over all executions for each trial_key
         histories - array (by trial) of array (by execution) of History
+        param_counts - array (by trial) of model parameter counts (trainable + non-trainable)
+        flops - array (by trial) of model FLOPS (if computable)
     """
     def __init__(self, trial_keys):
         self.trial_keys = trial_keys
         self.metrics = {}  # dict (by f"mean-{metric-key}" or f"sd-{metric-key}") of array (by trial)
         self.histories = []  # array (by trial) of array (by execution) of History
+        self.param_counts = []
+        self.flops = []
 
     @property
     def metrics_dataframe(self):
@@ -879,7 +904,10 @@ def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', execution
 
     Args:
       trial_keys: list of values to pass to trial_fn, one call per value
-      trial_fn: function that executes a fit with the given trial_keys and returns a History object
+      trial_fn: function that executes a fit with the given trial_keys and returns the result. The result
+        may be formatted as one of:
+            - History object
+            - tuple(model, History)
       objective: metric to measure
       scoring: one of: 'last', 'min', 'max'. Determines how the "best" step is chosen.
       executions_per_trial: number of executions of trial_fn with same trial_key, to average over.
@@ -904,6 +932,13 @@ def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', execution
         else:
             dic[key] = [value]
 
+    def standardise_trail_response(trial_fn_res):
+        if isinstance(trial_fn_res, tuple):
+            return trial_fn_res
+        else:
+            history = trial_fn_res
+            return (None, history)
+
     # setup
     res = TrialHistory(trial_keys)
     start = time.perf_counter()
@@ -919,13 +954,20 @@ def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', execution
         histories = []
         metrics_data = None
         for _ in range(executions_per_trial):
-            history = trial_fn(trial_key)
+            model, history = standardise_trail_response(trial_fn(trial_key))
             best_it = get_best_iteration(history)
             histories.append(history)
             if metrics_data is None:
                 metrics_data = {key: [] for key in history.history}
             for key in history.history:
                 metrics_data[key].append(history.history[key][best_it])
+
+        # get model stats
+        if model is not None:
+            param_count = model.count_params()  # trainable + non-trainable
+            flops = get_flops(model)
+            res.param_counts.append(param_count)
+            res.flops.append(flops)
 
         # collect stats over trials
         res.histories.append(histories)
@@ -943,3 +985,78 @@ def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', execution
     print(f"Time taken: {time.perf_counter() - start:.1f}s")
 
     return res
+
+
+def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=None):
+    """
+    Plot result of run_trails()
+    """
+    def _plot_best_trials(metric='mean_loss', error_metric='sd_loss', xscale='log', yscale='linear', ymax=None):
+        if error_metric is not None:
+            plt.errorbar(trials.trial_keys, trials.metrics[metric], yerr=trials.metrics[error_metric])
+        else:
+            plt.plot(trials.trial_keys, trials.metrics[metric])
+        plt.yscale(yscale)
+        plt.xscale(xscale)
+        plt.gca().set_xticks(trials.trial_keys)
+        plt.gca().get_xaxis().set_major_formatter(plt.ScalarFormatter())
+        plt.gca().tick_params(axis='x', which='minor', length=0, labelbottom=False)
+        # plt.minorticks_off()
+        plt.ylim([0, ymax])
+
+    def _plot_trial_histories(metric='loss', yscale='linear'):
+        for trial_key, histories in zip(trials.trial_keys, trials.histories):
+            losses = [history.history[metric] for history in histories]
+            losses = np.mean(losses, axis=0)
+            plt.plot(losses, label=trial_key)
+        plt.legend()
+        plt.yscale(yscale)
+        plt.gca().xaxis.set_major_locator(mticker.MaxNLocator(integer=True))  # ensure integer tick marks
+        if yscale == 'linear':
+            plt.ylim([0, None])
+
+    plt.figure(figsize=(15, 5), layout='constrained')
+
+    # Best Results - Training MPE
+    plt.subplot(2, 3, 1)
+    plt.title("Best results (train set)")
+    _plot_best_trials('mean_mpe', 'sd_mpe', yscale=br_yscale, ymax=br_ymax)
+    plt.xlabel(trial_key_name)
+    plt.ylabel("mean-pixel-error")
+
+    # Best Results - Validation MPE
+    plt.subplot(2, 3, 2)
+    plt.title("Best results (val set)")
+    _plot_best_trials('mean_val_mpe', 'sd_val_mpe', yscale=br_yscale, ymax=br_ymax)
+    plt.xlabel(trial_key_name)
+    plt.ylabel("mean-pixel-error")
+
+    # Model - FLOPS
+    if trials.param_counts or trials.flops:
+        plt.subplot(2, 3, 3)
+        plt.title("Model Size")
+        if trials.param_counts:
+            plt.plot(trials.trial_keys, trials.param_counts, label='param_counts')
+        if trials.flops:
+            plt.plot(trials.trial_keys, trials.flops, label='flops')
+        plt.xlabel(trial_key_name)
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.legend()
+        plt.gca().set_xticks(trials.trial_keys)
+        plt.gca().get_xaxis().set_major_formatter(plt.ScalarFormatter())
+        plt.gca().tick_params(axis='x', which='minor', length=0, labelbottom=False)
+
+    # Histories - Training MPE
+    plt.subplot(2, 3, 4)
+    plt.title("Training curves (train set)")
+    _plot_trial_histories(metric='mpe', yscale='log')
+    plt.ylabel("mean-pixel-error")
+    plt.xlabel("epoch")
+
+    # Histories - Validation MPE
+    plt.subplot(2, 3, 5)
+    plt.title("Training curves (val set)")
+    _plot_trial_histories(metric='val_mpe', yscale='log')
+    plt.ylabel("mean-pixel-error")
+    plt.xlabel("epoch")
