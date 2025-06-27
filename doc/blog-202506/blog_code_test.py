@@ -105,32 +105,32 @@ class CustomLayers(unittest.TestCase):
 
 class CustomMetricsAndLosses(unittest.TestCase):
     def test_MeanCoordError(self):
-      # check works without errors with symbolic tensors
-      # - can't pass tf.keras.Input() to metric, so validate via dummy model instead
-      inp = tf.keras.Input(shape=(149,149))
-      out = layers.Reshape((149, 149, 1))(inp)
-      model = tf.keras.Model(inp, out)
-      model.compile(optimizer="adam", loss="mse", metrics=[blog.MeanCoordError("heatmap-peak")])
-      x = tf.random.normal((32,149,149))
-      y = tf.random.normal((32,149,149,1))
-      model.train_on_batch(x, y)  # Internally calls metric.update_state with symbolic tensors
+        # check works without errors with symbolic tensors
+        # - can't pass tf.keras.Input() to metric, so validate via dummy model instead
+        inp = tf.keras.Input(shape=(149, 149))
+        out = layers.Reshape((149, 149, 1))(inp)
+        model = tf.keras.Model(inp, out)
+        model.compile(optimizer="adam", loss="mse", metrics=[blog.MeanCoordError("heatmap-peak")])
+        x = tf.random.normal((32, 149, 149))
+        y = tf.random.normal((32, 149, 149, 1))
+        model.train_on_batch(x, y)  # Internally calls metric.update_state with symbolic tensors
 
-      # check with actual values
-      y_true = tf.stack([blog.generate_heatmap_image(50,50)], axis=0)
-      y_pred = tf.stack([blog.generate_heatmap_image(110,10)], axis=0)
-      metric = blog.MeanCoordError(encoding='heatmap-peak', system='pixels')
-      metric.update_state(y_true, y_pred)
-      expected = np.sqrt((50-110)**2 + (50-10)**2)
-      self.assertAlmostEqual(metric.result().numpy(), expected, delta=0.01)
+        # check with actual values
+        y_true = tf.stack([blog.generate_heatmap_image(50, 50)], axis=0)
+        y_pred = tf.stack([blog.generate_heatmap_image(110, 10)], axis=0)
+        metric = blog.MeanCoordError(encoding='heatmap-peak', system='pixels')
+        metric.update_state(y_true, y_pred)
+        expected = np.sqrt((50 - 110) ** 2 + (50 - 10) ** 2)
+        self.assertAlmostEqual(metric.result().numpy(), expected, delta=0.01)
 
-      y_true = (np.array([50.,50.]) - 149//2) / 149
-      y_pred = (np.array([110.,10.]) - 149//2) / 149
-      metric = blog.MeanCoordError('xy', system='pixels')
-      metric.update_state(y_true, y_pred)
-      self.assertAlmostEqual(metric.result().numpy(), expected, delta=0.01)
+        y_true = (np.array([50., 50.]) - 149 // 2) / 149
+        y_pred = (np.array([110., 10.]) - 149 // 2) / 149
+        metric = blog.MeanCoordError('xy', system='pixels')
+        metric.update_state(y_true, y_pred)
+        self.assertAlmostEqual(metric.result().numpy(), expected, delta=0.01)
 
-      y_true = (np.array([50.,50.]) - 149//2) / 149
-      y_pred = (np.array([110.,10.]) - 149//2) / 149
-      metric = blog.MeanCoordError('xy', system='unit-scale')
-      metric.update_state(y_true, y_pred)
-      self.assertAlmostEqual(metric.result().numpy(), expected/149.0, delta=0.01)
+        y_true = (np.array([50., 50.]) - 149 // 2) / 149
+        y_pred = (np.array([110., 10.]) - 149 // 2) / 149
+        metric = blog.MeanCoordError('xy', system='unit-scale')
+        metric.update_state(y_true, y_pred)
+        self.assertAlmostEqual(metric.result().numpy(), expected / 149.0, delta=0.01)
