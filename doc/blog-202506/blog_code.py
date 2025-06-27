@@ -1,12 +1,14 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import IPython.display as idisplay
 import math
 import tqdm
 import cv2
+import time
 
 
 def create_dataset(n=1000, width=149, height=149):
@@ -843,3 +845,101 @@ class HeatmapPeakCoordLoss(tf.keras.losses.Loss):
         return self.component_weights[0] * image_wide_loss + \
             self.component_weights[1] * true_peak_loss + \
             self.component_weights[2] * pred_peak_loss
+
+
+class TrialHistory:
+    """
+    Properties:
+        trial_keys - array
+        metrics - dict with:
+            mean_{metric-name}" - array of 'metric-name' results, at best epoch for each trial,
+              averaged over all executions for each trial_key
+            sd_{metric-name}" - array of std. dev. of 'metric-name' results, at best epoch for each trial,
+              over all executions for each trial_key
+        histories - array (by trial) of array (by execution) of History
+    """
+    def __init__(self, trial_keys):
+        self.trial_keys = trial_keys
+        self.metrics = {}  # dict (by f"mean-{metric-key}" or f"sd-{metric-key}") of array (by trial)
+        self.histories = []  # array (by trial) of array (by execution) of History
+
+    @property
+    def metrics_dataframe(self):
+        return pd.DataFrame(self.metrics, index=pd.Index(self.trial_keys, name="trial_keys"))
+
+
+def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', executions_per_trial=1):
+    """
+    For each trial key, instantiates a model, runs a fixed number of epochs, and collects the best achieved metrics
+    (minimum loss/error).
+
+    Inspired by KerasTuner, but more appropriate for what we're trying to do.
+    KerasTuner is focused on finding the single set of hyperparameter values that had the best results,
+    whereas we want to get results across a grid of hyperparameter values.
+
+    Args:
+      trial_keys: list of values to pass to trial_fn, one call per value
+      trial_fn: function that executes a fit with the given trial_keys and returns a History object
+      objective: metric to measure
+      scoring: one of: 'last', 'min', 'max'. Determines how the "best" step is chosen.
+      executions_per_trial: number of executions of trial_fn with same trial_key, to average over.
+
+    Returns:
+      TrialHistory instance
+    """
+
+    def get_best_iteration(history):
+        if scoring == 'last':
+            return len(history.history[objective]) - 1
+        elif scoring == 'max':
+            return np.argmax(history.history[objective])
+        elif scoring == 'min':
+            return np.argmin(history.history[objective])
+        else:
+            raise ValueError(f"Invalid scoring: '{scoring}'")
+
+    def dict_array_append(dic, key, value):
+        if key in dic:
+            dic[key].append(value)
+        else:
+            dic[key] = [value]
+
+    # setup
+    res = TrialHistory(trial_keys)
+    start = time.perf_counter()
+
+    # run a number of trials, one for each trial_key
+    for trial_idx, trial_key in enumerate(trial_keys):
+        idisplay.clear_output(wait=True)
+        print(f"Trial {trial_idx + 1}/{len(trial_keys)}: trial_key={trial_key}")
+        print(f"Time taken so far: {time.perf_counter() - start:.1f}s")
+        print()
+
+        # run a number of executions for each trial
+        histories = []
+        metrics_data = None
+        for _ in range(executions_per_trial):
+            history = trial_fn(trial_key)
+            best_it = get_best_iteration(history)
+            histories.append(history)
+            if metrics_data is None:
+                metrics_data = {key: [] for key in history.history}
+            for key in history.history:
+                metrics_data[key].append(history.history[key][best_it])
+
+        # collect stats over trials
+        res.histories.append(histories)
+        for key in metrics_data:
+            dict_array_append(res.metrics, f"mean_{key}", np.mean(metrics_data[key]))
+            dict_array_append(res.metrics, f"sd_{key}", np.std(metrics_data[key]))
+
+    # cleanup
+    for key in res.metrics:
+        res.metrics[key] = np.array(res.metrics[key])
+
+    # summarise progress
+    idisplay.clear_output(wait=True)
+    print(f"Trial {len(trial_keys)}/{len(trial_keys)}: ✓ complete")
+    print(f"Time taken: {time.perf_counter() - start:.1f}s")
+
+    return res
