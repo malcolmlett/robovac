@@ -1072,9 +1072,10 @@ class TrialHistory:
         param_counts - array (by trial) of model parameter counts (trainable + non-trainable)
         flops - array (by trial) of model FLOPS (if computable)
     """
-    def __init__(self, trial_keys):
+    def __init__(self, trial_keys, executions_per_trial):
         self.trial_keys = trial_keys
-        self.metrics = {}  # dict (by f"mean-{metric-key}" or f"sd-{metric-key}") of array (by trial)
+        self.executions_per_trial = executions_per_trial
+        self.metrics = {}  # dict (by f"mean-{metric-key}" or f"sd-{metric-key}") of array (by trial, etc.)
         self.histories = []  # array (by trial) of array (by execution) of History
         self.param_counts = []
         self.flops = []
@@ -1131,7 +1132,7 @@ def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', execution
             return (None, history)
 
     # setup
-    res = TrialHistory(trial_keys)
+    res = TrialHistory(trial_keys, executions_per_trial)
     start = time.perf_counter()
 
     # run a number of trials, one for each trial_key
@@ -1165,6 +1166,8 @@ def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', execution
         for key in metrics_data:
             dict_array_append(res.metrics, f"mean_{key}", np.mean(metrics_data[key]))
             dict_array_append(res.metrics, f"sd_{key}", np.std(metrics_data[key]))
+            dict_array_append(res.metrics, f"min_{key}", np.min(metrics_data[key]))
+            dict_array_append(res.metrics, f"max_{key}", np.max(metrics_data[key]))
 
     # cleanup
     for key in res.metrics:
