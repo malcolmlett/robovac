@@ -1277,4 +1277,4 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
     # Table of things that aren't easy to read-off from the plots
     idisplay.display(trials.dataframe[
                          ['min_mpe', 'mean_mpe', 'sd_mpe', 'max_mpe', 'min_val_mpe', 'mean_val_mpe', 'sd_val_mpe',
-                          'max_val_mpe', 'param_count', 'flops']])
+                          'max_val_mpe', 'param_counts', 'flops']])
