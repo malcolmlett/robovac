@@ -1081,8 +1081,18 @@ class TrialHistory:
         self.flops = []
 
     @property
+    def dataframe(self):
+        return pd.concat([self.metrics_dataframe, self.model_size_dataframe], axis=1)
+
+    @property
     def metrics_dataframe(self):
         return pd.DataFrame(self.metrics, index=pd.Index(self.trial_keys, name="trial_keys"))
+
+    @property
+    def model_size_dataframe(self):
+        return pd.DataFrame(np.stack([self.param_counts, self.flops], axis=-1),
+                            columns=["param_counts", "flops"],
+                            index=pd.Index(self.trial_keys, name="trial_keys"))
 
 
 def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', executions_per_trial=1):
@@ -1185,11 +1195,16 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
     """
     Plot result of run_trails()
     """
-    def _plot_best_trials(metric='mean_loss', error_metric='sd_loss', xscale='log', yscale='linear', ymax=None):
-        if error_metric is not None:
-            plt.errorbar(trials.trial_keys, trials.metrics[metric], yerr=trials.metrics[error_metric])
+    def _plot_best_trials(metric='loss', xscale='log', yscale='linear', ymax=None):
+        if f"sd_{metric}" in trials.metrics:
+            plt.errorbar(trials.trial_keys, trials.metrics[f"mean_{metric}"], yerr=trials.metrics[f"sd_{metric}"],
+                         label="mean, +/-sd")
         else:
-            plt.plot(trials.trial_keys, trials.metrics[metric])
+            plt.plot(trials.trial_keys, trials.metrics[f"mean_{metric}"], label="mean")
+        if f"min_{metric}" in trials.metrics:
+            plt.fill_between(trials.trial_keys, trials.metrics[f"min_{metric}"], trials.metrics[f"max_{metric}"],
+                             alpha=0.2, color='tab:blue', linewidth=0, label="min/max")
+
         plt.yscale(yscale)
         plt.xscale(xscale)
         plt.gca().set_xticks(trials.trial_keys)
@@ -1197,6 +1212,7 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
         plt.gca().tick_params(axis='x', which='minor', length=0, labelbottom=False)
         # plt.minorticks_off()
         plt.ylim([0, ymax])
+        plt.legend()
 
     def _plot_trial_histories(metric='loss', yscale='linear'):
         for trial_key, histories in zip(trials.trial_keys, trials.histories):
@@ -1214,18 +1230,18 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
     # Best Results - Training MPE
     plt.subplot(2, 3, 1)
     plt.title("Best results (train set)")
-    _plot_best_trials('mean_mpe', 'sd_mpe', yscale=br_yscale, ymax=br_ymax)
+    _plot_best_trials('mpe', yscale=br_yscale, ymax=br_ymax)
     plt.xlabel(trial_key_name)
     plt.ylabel("mean-pixel-error")
 
     # Best Results - Validation MPE
     plt.subplot(2, 3, 2)
     plt.title("Best results (val set)")
-    _plot_best_trials('mean_val_mpe', 'sd_val_mpe', yscale=br_yscale, ymax=br_ymax)
+    _plot_best_trials('val_mpe', yscale=br_yscale, ymax=br_ymax)
     plt.xlabel(trial_key_name)
     plt.ylabel("mean-pixel-error")
 
-    # Model - FLOPS
+    # Model Size
     if trials.param_counts or trials.flops:
         plt.subplot(2, 3, 3)
         plt.title("Model Size")
@@ -1236,6 +1252,7 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
         plt.xlabel(trial_key_name)
         plt.xscale('log')
         plt.yscale('log')
+        plt.grid(axis='y')
         plt.legend()
         plt.gca().set_xticks(trials.trial_keys)
         plt.gca().get_xaxis().set_major_formatter(plt.ScalarFormatter())
@@ -1254,3 +1271,10 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
     _plot_trial_histories(metric='val_mpe', yscale='log')
     plt.ylabel("mean-pixel-error")
     plt.xlabel("epoch")
+
+    plt.show()
+
+    # Table of things that aren't easy to read-off from the plots
+    idisplay.display(trials.dataframe[
+                         ['min_mpe', 'mean_mpe', 'sd_mpe', 'max_mpe', 'min_val_mpe', 'mean_val_mpe', 'sd_val_mpe',
+                          'max_val_mpe', 'param_count', 'flops']])
