@@ -1191,30 +1191,31 @@ def run_trials(trial_keys, trial_fn, objective='loss', scoring='last', execution
     return res
 
 
-def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=None):
+def plot_trials(trials, trial_key_name="trial key", trial_key_scale='log', br_yscale='linear', br_ymax=None):
     """
     Plot result of run_trails()
     """
-    def _plot_best_trials(metric='loss', xscale='log', yscale='linear', ymax=None):
+    def _plot_best_trials(metric, xcategorical, xscale, yscale, ymax):
         if f"sd_{metric}" in trials.metrics:
             plt.errorbar(trials.trial_keys, trials.metrics[f"mean_{metric}"], yerr=trials.metrics[f"sd_{metric}"],
-                         label="mean, +/-sd")
+                        label="mean, +/-sd")
         else:
             plt.plot(trials.trial_keys, trials.metrics[f"mean_{metric}"], label="mean")
         if f"min_{metric}" in trials.metrics:
             plt.fill_between(trials.trial_keys, trials.metrics[f"min_{metric}"], trials.metrics[f"max_{metric}"],
-                             alpha=0.2, color='tab:blue', linewidth=0, label="min/max")
+                            alpha=0.2, color='tab:blue', linewidth=0, label="min/max")
 
         plt.yscale(yscale)
-        plt.xscale(xscale)
+        if not xcategorical:
+            plt.xscale(xscale)
+            plt.gca().get_xaxis().set_major_formatter(plt.ScalarFormatter())
         plt.gca().set_xticks(trials.trial_keys)
-        plt.gca().get_xaxis().set_major_formatter(plt.ScalarFormatter())
         plt.gca().tick_params(axis='x', which='minor', length=0, labelbottom=False)
         # plt.minorticks_off()
         plt.ylim([0, ymax])
         plt.legend()
 
-    def _plot_trial_histories(metric='loss', yscale='linear'):
+    def _plot_trial_histories(metric, yscale):
         for trial_key, histories in zip(trials.trial_keys, trials.histories):
             losses = [history.history[metric] for history in histories]
             losses = np.mean(losses, axis=0)
@@ -1226,18 +1227,19 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
             plt.ylim([0, None])
 
     plt.figure(figsize=(15, 5), layout='constrained')
+    xcategorical = isinstance(trials.trial_keys[0], str)
 
     # Best Results - Training MPE
     plt.subplot(2, 3, 1)
     plt.title("Best results (train set)")
-    _plot_best_trials('mpe', yscale=br_yscale, ymax=br_ymax)
+    _plot_best_trials('mpe', xcategorical=xcategorical, xscale=trial_key_scale, yscale=br_yscale, ymax=br_ymax)
     plt.xlabel(trial_key_name)
     plt.ylabel("mean-pixel-error")
 
     # Best Results - Validation MPE
     plt.subplot(2, 3, 2)
     plt.title("Best results (val set)")
-    _plot_best_trials('val_mpe', yscale=br_yscale, ymax=br_ymax)
+    _plot_best_trials('val_mpe', xcategorical=xcategorical, xscale=trial_key_scale, yscale=br_yscale, ymax=br_ymax)
     plt.xlabel(trial_key_name)
     plt.ylabel("mean-pixel-error")
 
@@ -1250,12 +1252,13 @@ def plot_trials(trials, trial_key_name="trial key", br_yscale='linear', br_ymax=
         if trials.flops:
             plt.plot(trials.trial_keys, trials.flops, label='flops')
         plt.xlabel(trial_key_name)
-        plt.xscale('log')
         plt.yscale('log')
         plt.grid(axis='y')
         plt.legend()
+        if not xcategorical:
+            plt.xscale(trial_key_scale)
+            plt.gca().get_xaxis().set_major_formatter(plt.ScalarFormatter())
         plt.gca().set_xticks(trials.trial_keys)
-        plt.gca().get_xaxis().set_major_formatter(plt.ScalarFormatter())
         plt.gca().tick_params(axis='x', which='minor', length=0, labelbottom=False)
 
     # Histories - Training MPE
