@@ -482,7 +482,7 @@ def plot_layers(model, dataset, layer_filter, coord_layer_filter=None, coord_cha
         for l_idx in layer_indices:
             layer = model.layers[l_idx]
             layer_data = layer_outputs[l_idx]
-            if coord_channels is not None:
+            if coord_channels is not None and coord_channels > 0:
                 # drop coord_channels from main feature layer
                 layer_data = layer_data[..., :-coord_channels]
             col += 1
@@ -499,7 +499,6 @@ def plot_layers(model, dataset, layer_filter, coord_layer_filter=None, coord_cha
             # coordinate channel
             if coord_channels is not None and coord_channels > 0:
                 for l_idx in layer_indices:
-                    layer = model.layers[l_idx]
                     layer_data = layer_outputs[l_idx]
                     col += 1
                     plt.subplot(rows, cols, 1 + (row * cols) + col)
