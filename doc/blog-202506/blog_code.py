@@ -370,6 +370,7 @@ def quick_show_preds(model, dataset, width=149, height=149):
 
     print(f"pred.x: {np.min(dataset_pred_coords[:, 0])}..{np.max(dataset_pred_coords[:, 0])}")
     print(f"pred.y: {np.min(dataset_pred_coords[:, 1])}..{np.max(dataset_pred_coords[:, 1])}")
+    print(f"MPE: {np.mean(coord_errors_px)}, sd: {np.std(coord_errors_px)}")
 
     plt.figure(figsize=(10, 2), layout='constrained')
 
