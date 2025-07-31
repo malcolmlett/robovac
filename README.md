@@ -52,7 +52,7 @@ Recent result:
   when the floor is clean or its battery is low. If floor cleaning was recently interrupted, it should resume
   where it left off without repeating areas already cleaned.
 * This component depends on accurate mapping output from the SLAM component.
-* Model architecture yet to be decided. Likely either supervised learning with a CNN, or RL with a high-level
+* Model architecture yet to be decided. Likely either supervised learning with a CNN, RNN, or Transformer, or RL with a high-level
   policy network.
 
 ### 3. Motor Policy
@@ -64,7 +64,7 @@ Recent result:
 * Uses RL (reinforcement learning) and a policy network.
 
 ### Later Stages
-A number of additional stages of development could also be carried out which modify or enhance what's build so far:
+A number of additional stages of development could also be carried out which modify or enhance what's built so far:
 
 * Online Learning
     * All of the above stages use simulated data for training and the agent is unlikely to do well once applied
@@ -76,6 +76,10 @@ A number of additional stages of development could also be carried out which mod
     * Taking heavy inspiration from the ideas of _Adversarial Networks_ and _Predictive Coding_, I believe it is
       possible to produce a stable self-learning strategy, where the robovac can continue to fine-tune its models
       without further external input.
+	* For example, a "sensory prediction" approach has the agent employ something like an EM cycle: 1) it uses its sensory data
+	  to predict its current location and to revise the nearby map. 2) While moving, it uses an inverted model to predict
+	  the expected sensory state at some soon time in the future. 3) At that later time, it uses the prediction error to
+	  fine-tune the model.
 
 * Embedded Computing
     * The models created above are initially optimised for ease and simplicity of development. Unfortunately
